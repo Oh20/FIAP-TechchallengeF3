@@ -1,0 +1,304 @@
+# Pipeline CI/CD - ToggleMaster (5 microsserviços no AKS)
+# Fluxo: Build -> Prepare -> Deploy -> Expose
+
+# Dispara o pipeline a cada push na branch main
+trigger:
+  branches:
+    include: [ main ]
+
+# Variáveis globais reutilizadas nas etapas, definindo namespace e versão do kubectl
+variables:
+  appsNamespace: 'toggle-apps'
+  kubectlVersion: '1.35.5'
+
+# Lista de serviços para PathFilter e build/push de imagens Docker, com nome e caminho do Dockerfile
+parameters:
+  - name: services
+    type: object
+    default:
+      - { name: auth-service,       path: auth-service }
+      - { name: flag-service,       path: flag-service }
+      - { name: targeting-service,  path: targeting-service }
+      - { name: evaluation-service, path: evaluation-service }
+      - { name: analytics-service,  path: analytics-service }
+
+
+stages:
+# ================================
+# Etapa de Build e Push das imagens Docker para o registro
+# ================================
+  - stage: Build
+    displayName: 'CI - Build e Push'
+    jobs:
+      - job: build_and_push
+        pool:
+          name: SelfHosted
+        steps:
+          - checkout: self
+            fetchDepth: 0 # Necessário para detectar alterações em commits anteriores
+            # PathFilter para acionar o build apenas se houver alterações nos diretórios dos serviços
+          - script: |
+              RANGE="HEAD~1..HEAD"
+              for svc in auth-service flag-service targeting-service evaluation-service analytics-service; do
+                var="$(echo $svc | tr '-' '_')_changed"
+                if git diff --name-only $RANGE | grep -q "^$svc/"; then
+                  echo "##vso[task.setvariable variable=${var};isOutput=true]true"
+                else
+                  echo "##vso[task.setvariable variable=${var};isOutput=true]false"
+                fi
+              done
+            name: detect
+            displayName: 'Detectar servicos alterados'
+            # Itera sobre cada serviço definido nos parâmetros e executa o build e push da imagem Docker apenas se houver alterações detectadas
+          - ${{ each svc in parameters.services }}:
+              - task: Docker@2
+                displayName: 'Build e push ${{ svc.name }}'
+                condition: and(succeeded(), eq(variables['detect.${{ replace(svc.name, '-', '_') }}_changed'], 'true'))
+                inputs:
+                  command: buildAndPush
+                  repository: ${{ svc.name }}
+                  dockerfile: ${{ svc.path }}/Dockerfile
+                  containerRegistry: fiapdevopsadegj
+                  tags: |
+                    $(Build.BuildId)
+                    latest
+  # ================================
+  # Etapa de preparação, criação de secrets e execução de migrations no AKS
+  # ================================
+  - stage: Prepare
+    displayName: 'Secrets e Migrations'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: prepare
+        pool:
+          name: SelfHosted
+        steps:
+          - checkout: self
+          - task: KubectlInstaller@0
+            displayName: 'Instalar kubectl'
+            inputs:
+              kubectlVersion: '$(kubectlVersion)'
+  # Secrets: injeta credenciais de cada serviço no cluster
+          - task: KubernetesManifest@1
+            displayName: 'Secret auth-service'
+            inputs:
+              action: createSecret
+              connectionType: kubernetesServiceConnection
+              kubernetesServiceConnection: 'aks-togglemaster'
+              namespace: '$(appsNamespace)'
+              secretType: generic
+              secretName: auth-service-secret
+              secretArguments: '--from-literal=DATABASE_URL=$(AUTH_DATABASE_URL) --from-literal=MASTER_KEY=$(AUTH_MASTER_KEY)'
+          - task: KubernetesManifest@1
+            displayName: 'Secret flag-service'
+            inputs:
+              action: createSecret
+              connectionType: kubernetesServiceConnection
+              kubernetesServiceConnection: 'aks-togglemaster'
+              namespace: '$(appsNamespace)'
+              secretType: generic
+              secretName: flag-service-secret
+              secretArguments: '--from-literal=DATABASE_URL=$(FLAG_DATABASE_URL)'
+          - task: KubernetesManifest@1
+            displayName: 'Secret targeting-service'
+            inputs:
+              action: createSecret
+              connectionType: kubernetesServiceConnection
+              kubernetesServiceConnection: 'aks-togglemaster'
+              namespace: '$(appsNamespace)'
+              secretType: generic
+              secretName: targeting-service-secret
+              secretArguments: '--from-literal=DATABASE_URL=$(TARGETING_DATABASE_URL)'
+          - task: KubernetesManifest@1
+            displayName: 'Secret evaluation-service'
+            inputs:
+              action: createSecret
+              connectionType: kubernetesServiceConnection
+              kubernetesServiceConnection: 'aks-togglemaster'
+              namespace: '$(appsNamespace)'
+              secretType: generic
+              secretName: evaluation-service-secret
+              secretArguments: '--from-literal=REDIS_URL=$(EVAL_REDIS_URL) --from-literal=SERVICE_API_KEY=$(EVAL_SERVICE_API_KEY) --from-literal=SERVICE_BUS_CONNECTION_STRING=$(EVAL_SERVICE_BUS_CONN)'
+          - task: KubernetesManifest@1
+            displayName: 'Secret analytics-service'
+            inputs:
+              action: createSecret
+              connectionType: kubernetesServiceConnection
+              kubernetesServiceConnection: 'aks-togglemaster'
+              namespace: '$(appsNamespace)'
+              secretType: generic
+              secretName: analytics-service-secret
+              secretArguments: '--from-literal=SERVICE_BUS_CONNECTION_STRING=$(ANALYTICS_SERVICE_BUS_CONN) --from-literal=COSMOS_KEY=$(ANALYTICS_COSMOS_KEY)'
+
+  # ConfigMaps: de init.sql: apaga os antigos e recria
+          - task: Kubernetes@1
+            displayName: 'Limpar configmaps de init.sql'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'aks-togglemaster'
+              command: delete
+              arguments: 'configmap auth-initsql flag-initsql targeting-initsql -n $(appsNamespace) --ignore-not-found'
+          - task: Kubernetes@1
+            displayName: 'ConfigMap init.sql (auth)'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'aks-togglemaster'
+              command: create
+              arguments: 'configmap auth-initsql --from-file=init.sql=auth-service/db/init.sql -n $(appsNamespace)'
+          - task: Kubernetes@1
+            displayName: 'ConfigMap init.sql (flag)'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'aks-togglemaster'
+              command: create
+              arguments: 'configmap flag-initsql --from-file=init.sql=flag-service/db/init.sql -n $(appsNamespace)'
+          - task: Kubernetes@1
+            displayName: 'ConfigMap init.sql (targeting)'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'aks-togglemaster'
+              command: create
+              arguments: 'configmap targeting-initsql --from-file=init.sql=targeting-service/db/init.sql -n $(appsNamespace)'
+  # Migrations: apaga os jobs antigos e aplica os novos, aguardando a conclusão
+          - task: Kubernetes@1
+            displayName: 'Limpar jobs de migration'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'aks-togglemaster'
+              command: delete
+              arguments: 'job auth-migrate flag-migrate targeting-migrate -n $(appsNamespace) --ignore-not-found'
+          - task: Kubernetes@1
+            displayName: 'Aplicar jobs de migration'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'aks-togglemaster'
+              command: apply
+              arguments: >-
+                -f K8S_AKS/auth-service/migration-job.yaml
+                -f K8S_AKS/flag-service/migration-job.yaml
+                -f K8S_AKS/targeting-service/migration-job.yaml
+          - task: Kubernetes@1
+            displayName: 'Aguardar migrations'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'aks-togglemaster'
+              command: wait
+              arguments: '--for=condition=complete job/auth-migrate job/flag-migrate job/targeting-migrate -n $(appsNamespace) --timeout=180s'
+
+  # ================================
+  # Etapa de Deploy dos serviços no AKS
+  # ================================
+  - stage: Deploy
+    displayName: 'Deploy dos servicos'
+    dependsOn: Prepare
+    condition: succeeded()
+    jobs:
+      - deployment: deploy
+        pool:
+          name: SelfHosted
+        environment: 'togglemaster-aks'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: KubectlInstaller@0
+                  displayName: 'Instalar kubectl'
+                  inputs:
+                    kubectlVersion: '$(kubectlVersion)'
+                    # Aplica os manifestos de cada serviço (configmap, deployment e service)
+                - task: Kubernetes@1
+                  displayName: 'Aplicar manifestos'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceEndpoint: 'aks-togglemaster'
+                    command: apply
+                    arguments: >-
+                      -f K8S_AKS/auth-service/configmap.yaml
+                      -f K8S_AKS/auth-service/deployment.yaml
+                      -f K8S_AKS/auth-service/service.yaml
+                      -f K8S_AKS/flag-service/configmap.yaml
+                      -f K8S_AKS/flag-service/deployment.yaml
+                      -f K8S_AKS/flag-service/service.yaml
+                      -f K8S_AKS/targeting-service/configmap.yaml
+                      -f K8S_AKS/targeting-service/deployment.yaml
+                      -f K8S_AKS/targeting-service/service.yaml
+                      -f K8S_AKS/evaluation-service/configmap.yaml
+                      -f K8S_AKS/evaluation-service/deployment.yaml
+                      -f K8S_AKS/evaluation-service/service.yaml
+                      -f K8S_AKS/analytics-service/configmap.yaml
+                      -f K8S_AKS/analytics-service/deployment.yaml
+                      -f K8S_AKS/analytics-service/service.yaml
+
+                # Reinicia os deployments para aplicar as novas imagens Docker, garantindo que os pods sejam atualizados 
+                - task: Kubernetes@1
+                  displayName: 'Rollout restart'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceEndpoint: 'aks-togglemaster'
+                    command: rollout
+                    arguments: >-
+                      restart
+                      deployment/auth-service
+                      deployment/flag-service
+                      deployment/targeting-service
+                      deployment/evaluation-service
+                      deployment/analytics-service
+                      -n $(appsNamespace)
+
+                # Aguardar o rollout dos deployments, garantindo que todos os pods estejam disponíveis antes de prosseguir
+                - task: Kubernetes@1
+                  displayName: 'Aguardar rollout (auth/flag/targeting)'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceEndpoint: 'aks-togglemaster'
+                    command: wait
+                    arguments: '--for=condition=available deployment/auth-service deployment/flag-service deployment/targeting-service -n $(appsNamespace) --timeout=180s'
+                # Aguardar o rollout dos deployments de evaluation e analytics, permitindo que o pipeline continue mesmo que haja falhas (continueOnError: true)
+                - task: Kubernetes@1
+                  displayName: 'Aguardar rollout (evaluation/analytics)'
+                  continueOnError: true
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceEndpoint: 'aks-togglemaster'
+                    command: wait
+                    arguments: '--for=condition=available deployment/evaluation-service deployment/analytics-service -n $(appsNamespace) --timeout=180s'
+
+  # ================================
+  # Etapa de Exposição dos serviços via Ingress e configuração do HPA
+  # ================================
+  - stage: Expose
+    displayName: 'Ingress e HPA'
+    dependsOn: Deploy
+    condition: succeeded()
+    jobs:
+      - job: expose
+        pool:
+          name: SelfHosted
+        steps:
+          - checkout: self
+          - task: KubectlInstaller@0
+            displayName: 'Instalar kubectl'
+            inputs:
+              kubectlVersion: '$(kubectlVersion)'
+
+          # Ingress: expõe os serviços para fora do cluster (App Gateway/AGIC)
+          - task: Kubernetes@1
+            displayName: 'Aplicar Ingress'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'aks-togglemaster'
+              command: apply
+              arguments: '-f K8S_AKS/ingress/ingress.yaml'
+              
+          # HPA: escala pods automaticamente conforme a carga
+          - task: Kubernetes@1
+            displayName: 'Aplicar HPA'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceEndpoint: 'aks-togglemaster'
+              command: apply
+              arguments: >-
+                -f K8S_AKS/scaling/hpa-evaluation.yaml
+                -f K8S_AKS/scaling/hpa-analytics.yaml

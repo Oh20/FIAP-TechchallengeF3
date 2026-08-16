@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evaluation-service
+  namespace: toggle-apps
+  labels:
+    app: evaluation-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evaluation-service
+  template:
+    metadata:
+      labels:
+        app: evaluation-service
+    spec:
+      containers:
+        - name: evaluation-service
+          image: fiapdevopsadegj.azurecr.io/evaluation-service:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8004
+          envFrom:
+            - configMapRef:
+                name: evaluation-service-config
+          env:
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: evaluation-service-secret
+                  key: REDIS_URL
+            - name: SERVICE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: evaluation-service-secret
+                  key: SERVICE_API_KEY
+            - name: SERVICE_BUS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: evaluation-service-secret
+                  key: SERVICE_BUS_CONNECTION_STRING
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "1000m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
