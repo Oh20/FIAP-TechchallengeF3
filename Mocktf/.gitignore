@@ -1,0 +1,10 @@
+.terraform/
+# .terraform.lock.hcl versionado propositalmente
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+backend.hcl
+secrets.tfvars
+crash.log
+*.auto.tfvars

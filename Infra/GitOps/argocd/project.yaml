@@ -1,0 +1,30 @@
+# AppProject: delimita o que as Applications do ToggleMaster podem fazer.
+# Sem isso qualquer Application poderia apontar para qualquer repo/cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: togglemaster
+  namespace: argocd
+spec:
+  description: 'ToggleMaster - microsservicos no AKS'
+
+  # URL exata do remote: sem o prefixo "Oh20Tony@" e com os espacos em %20.
+  # Precisa bater byte a byte com o repoURL das Applications e do repo secret.
+  sourceRepos:
+    - 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3'
+
+  destinations:
+    - namespace: toggle-apps
+      server: 'https://fiaptc3-dns-l25hulwg.hcp.eastus.azmk8s.io:443'
+    # Necessario para o App-of-Apps criar as demais Applications
+    - namespace: argocd
+      server: 'https://kubernetes.default.svc'
+
+  # Namespace e o unico recurso de escopo de cluster permitido
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

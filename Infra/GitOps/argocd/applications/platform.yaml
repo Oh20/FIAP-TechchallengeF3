@@ -1,0 +1,30 @@
+# Recursos compartilhados: Ingress e HPAs. Separados dos servicos porque nao
+# mudam a cada build e nao carregam tag de imagem.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: togglemaster
+
+  source:
+    repoURL: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3'
+    targetRevision: main
+    path: Infra/GitOps/prod/platform
+
+  destination:
+    server: 'https://fiaptc3-dns-l25hulwg.hcp.eastus.azmk8s.io:443'
+    namespace: toggle-apps
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    managedNamespaceMetadata:
+      labels:
+        projeto: togglemaster

@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: flag-service
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: togglemaster
+
+  source:
+    repoURL: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3'
+    targetRevision: main
+    path: Infra/GitOps/prod/flag-service
+
+  destination:
+    server: 'https://fiaptc3-dns-l25hulwg.hcp.eastus.azmk8s.io:443'
+    namespace: toggle-apps
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    # Substitui o 00-namespaces.yaml: o label vem daqui em vez de um manifesto
+    managedNamespaceMetadata:
+      labels:
+        projeto: togglemaster
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 2m
