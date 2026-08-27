@@ -1,0 +1,17 @@
+# Service ClusterIP do mock. Da ao Argo um segundo recurso para reconciliar
+# e um endpoint para validar o pod via port-forward.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-nginx
+  labels:
+    app: mock-nginx
+    managed-by: argocd
+spec:
+  type: ClusterIP
+  selector:
+    app: mock-nginx
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
