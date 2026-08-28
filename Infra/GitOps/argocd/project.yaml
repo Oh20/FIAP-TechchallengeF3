@@ -12,7 +12,7 @@ spec:
   # Precisa bater byte a byte com o repoURL das Applications e do repo secret.
   sourceRepos:
     - 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3'
-
+    - 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/TCF3%20-%20K8S'
   destinations:
     - namespace: toggle-apps
       server: 'https://fiaptc3-dns-l25hulwg.hcp.eastus.azmk8s.io:443'

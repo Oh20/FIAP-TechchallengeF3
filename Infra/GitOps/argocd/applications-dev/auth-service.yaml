@@ -8,9 +8,9 @@ metadata:
 spec:
   project: togglemaster
   source:
-    repoURL: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3'
+    repoURL: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/TCF3%20-%20K8S'
     targetRevision: main
-    path: Infra/GitOps/dev/auth-service
+    path: overlays/dev/auth-service
   destination:
     server: 'https://fiaptc3-dns-l25hulwg.hcp.eastus.azmk8s.io:443'
     namespace: toggle-apps
