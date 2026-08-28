@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apache-test
+  namespace: toggle-apps
+  labels:
+    app: apache-test
+    managed-by: argocd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: apache-test
+  template:
+    metadata:
+      labels:
+        app: apache-test
+    spec:
+      containers:
+        - name: apache
+          image: httpd:2.4-alpine
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
