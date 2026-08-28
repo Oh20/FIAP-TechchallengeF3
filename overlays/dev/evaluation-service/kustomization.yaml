@@ -6,3 +6,5 @@ resources:
 images:
   - name: fiapdevopsadegj.azurecr.io/evaluation-service
     newTag: latest
+commonAnnotations:
+  teste-gitops: "sync-check-1"
