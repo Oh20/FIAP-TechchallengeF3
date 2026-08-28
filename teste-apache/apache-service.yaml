@@ -5,6 +5,7 @@ metadata:
   namespace: toggle-apps
   labels:
     app: apache-test
+    managed-by: argocd
 spec:
   type: ClusterIP
   selector:
