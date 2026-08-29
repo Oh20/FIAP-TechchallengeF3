@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: analytics-service
-          image: fiapdevopsadegj.azurecr.io/analytics-service:latest
+          image: httpd:2.4-alpine
           imagePullPolicy: Always
           ports:
             - name: http
