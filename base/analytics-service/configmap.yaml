@@ -6,8 +6,9 @@ metadata:
   labels:
     app: analytics-service
 data:
-  PORT: "8005"
-  SERVICE_BUS_QUEUE_NAME: "togglemasterqueue"
-  COSMOS_ENDPOINT: "https://tohhlemaster-analytics.documents.azure.com:443/"
-  COSMOS_DATABASE: "ToggleMaster"
-  COSMOS_CONTAINER: "ToggleMasterAnalytics"
+#  PORT: "8005"
+#  SERVICE_BUS_QUEUE_NAME: "togglemasterqueue"
+#  COSMOS_ENDPOINT: "https://tohhlemaster-analytics.documents.azure.com:443/"
+#  COSMOS_DATABASE: "ToggleMaster"
+#  COSMOS_CONTAINER: "ToggleMasterAnalytics"
+#
