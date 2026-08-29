@@ -4,5 +4,5 @@ namespace: toggle-apps
 resources:
   - ../../../base/analytics-service
 images:
-  - name: httpd:2.4
-    newTag: alpine
+  - name: fiapdevopsadegj.azurecr.io/analytics-service
+    newTag: latest
