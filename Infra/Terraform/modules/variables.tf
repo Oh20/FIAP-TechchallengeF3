@@ -1,60 +1,66 @@
 variable  "resource-group_toggle-master" {
   type        = string
-  default     = "rg-toggle-master"
   description = "Resource Group Criada para o projeto toggle-master"
 }
 
 variable "location" {
   type        = string
-  default     = "eastus"
   description = "Location Criada para o projeto toggle-master"
 }
 
 variable "vnet" {
   type        = string
-  default     = "vnet-toggle-master"
   description = "VNet Criada para o projeto toggle-master"
 }
 
 variable subnet {
   type        = string
-  default     = "subnet-toggle-master"
   description = "Subnet Criada para o projeto toggle-master"
 }
 
-variable "database-postgre" {
-  type        = string
-  default     = "database-postgre-toggle-master"
-  description = "Database PostgreSQL Criada para o projeto toggle-master"
+variable "database-postgres" {
+  description = "Instância de Database PostgreSQL Criada para o projeto toggle-master"
+  default =  {
+    "auth_db" = {
+      tamanho  = "B_Standard_B1ms"
+      nome_bd  = "auth_db"
+      usuario  = "admin_auth" 
+    }
+    "flag_db" = {
+      tamanho  = "B_Standard_B1ms"
+      nome_bd  = "flag_db"
+      usuario  = "admin_flag" 
+    }
+    "targeting_db" = {
+      tamanho  = "B_Standard_B1ms"
+      nome_bd  = "targeting_db"
+      usuario  = "admin_targ" 
+    }
+  }
 }
 
 variable "aks-toggle-master" {
   type        = string
-  default     = "aks-toggle-master"
   description = "Cluster AKS Criado para o projeto toggle-master"
 }
 
 variable "redis-toggle-master" {
   type        = string
-  default     = "redis-toggle-master"
   description = "Redis Criado para o projeto toggle-master"
 }
 
 variable "cosmodb-toggle-master" {
   type        = string
-  default     = "cosmodb-toggle-master"
   description = "Cosmodb Criado para o projeto toggle-master"
 }
 
 variable "servicebus-toggle-master" {
   type        = string
-  default     = "servicebus-toggle-master"
   description = "Service Bus Criado para o projeto toggle-master"
 }
 
 variable "acr-toggle-master" {
   type        = string
-  default     = "acr-toggle-master"
   description = "ACR Criado para o projeto toggle-master"
 }
 
@@ -63,7 +69,5 @@ variable "tags" {
   default     = {}
   description = "Tags para o projeto toggle-master"
 }
-
-
 
 
