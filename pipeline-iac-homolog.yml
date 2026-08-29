@@ -1,0 +1,298 @@
+# Pipeline IaC - Ambiente de Homologacao (Mocktf: VNET + NSG + VM)
+# Fluxo: Bootstrap do backend -> Fmt/Validate/Plan -> Approval Gate -> Apply
+#
+# Pre-requisitos no Azure DevOps:
+#   1. Extensao "Terraform" (Microsoft DevLabs) instalada na organizacao,
+#      que fornece as tasks TerraformInstaller@0 e TerraformTaskV4@4.
+#   2. Service connection ARM 'sc-azure-togglemaster' com role Contributor
+#      na subscription (necessaria para criar RG, rede e VM).
+#   3. Environment 'Homolog-Infra' criado com Approval Gate.
+#   4. Variaveis SECRETAS no pipeline (ou em variable group vinculado):
+#        sshPublicKey     -> conteudo de ~/.ssh/id_rsa.pub
+#        allowedSshSource -> IP/CIDR autorizado no SSH, ex: 200.10.5.7/32
+#      Sao injetadas como TF_VAR_* e nao ficam versionadas no .tfvars.
+
+name: iac-homolog-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - Mocktf/**
+      - pipeline-iac-homolog.yml
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - Mocktf/**
+
+parameters:
+  - name: destroyEnvironment
+    displayName: 'Destruir o ambiente de homologacao em vez de aplicar'
+    type: boolean
+    default: false
+
+variables:
+  azureServiceConnection: 'sc-azure-togglemaster'
+  workingDirectory: '$(System.DefaultWorkingDirectory)/Mocktf/env/homolog'
+  modulesDirectory: '$(System.DefaultWorkingDirectory)/Mocktf'
+  tfVersion: '1.7.5'
+  varFile: 'homolog.tfvars'
+
+  # Backend remoto do state (criado pelo stage Bootstrap se ainda nao existir)
+  backendResourceGroup: 'rg-togglemaster-tfstate'
+  backendStorageAccount: 'sttogglemastertfstate'
+  backendContainer: 'tfstate'
+  backendKey: 'togglemaster-homolog.terraform.tfstate'
+  backendLocation: 'eastus'
+
+stages:
+  # ==========================================================
+  # 1. Garante que a storage account do state remoto existe.
+  #    'terraform init' nao cria o backend, apenas o consome.
+  # ==========================================================
+  - stage: Bootstrap
+    displayName: 'Bootstrap do backend remoto'
+    jobs:
+      - job: EnsureBackend
+        displayName: 'Criar RG/Storage/Container do tfstate'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: none
+
+          - task: AzureCLI@2
+            displayName: 'az: criar backend se necessario'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -euo pipefail
+
+                az group create \
+                  --name "$(backendResourceGroup)" \
+                  --location "$(backendLocation)" \
+                  --output none
+
+                if ! az storage account show \
+                      --name "$(backendStorageAccount)" \
+                      --resource-group "$(backendResourceGroup)" \
+                      --output none 2>/dev/null; then
+                  echo "Criando storage account $(backendStorageAccount)..."
+                  az storage account create \
+                    --name "$(backendStorageAccount)" \
+                    --resource-group "$(backendResourceGroup)" \
+                    --location "$(backendLocation)" \
+                    --sku Standard_LRS \
+                    --kind StorageV2 \
+                    --min-tls-version TLS1_2 \
+                    --allow-blob-public-access false \
+                    --output none
+                else
+                  echo "Storage account $(backendStorageAccount) ja existe."
+                fi
+
+                # Versionamento protege o state contra sobrescrita acidental
+                az storage account blob-service-properties update \
+                  --account-name "$(backendStorageAccount)" \
+                  --resource-group "$(backendResourceGroup)" \
+                  --enable-versioning true \
+                  --output none
+
+                # Usa a account key em vez de --auth-mode login: a role
+                # Contributor permite listKeys, mas nao da acesso ao data plane.
+                # Crase no lugar de command substitution para nao colidir com a
+                # macro do Azure Pipelines, resolvida antes do bash executar.
+                ACCOUNT_KEY=`az storage account keys list --account-name "$(backendStorageAccount)" --resource-group "$(backendResourceGroup)" --query "[0].value" -o tsv`
+
+                az storage container create \
+                  --name "$(backendContainer)" \
+                  --account-name "$(backendStorageAccount)" \
+                  --account-key "$ACCOUNT_KEY" \
+                  --output none
+
+                echo "Backend pronto: $(backendContainer)/$(backendKey)"
+
+  # ==========================================================
+  # 2. Fmt, Validate e Plan. Roda tambem em Pull Request.
+  # ==========================================================
+  - stage: ValidateAndPlan
+    displayName: 'Terraform Validate & Plan'
+    dependsOn: Bootstrap
+    jobs:
+      - job: Plan
+        displayName: 'Fmt + Validate + Plan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - task: TerraformInstaller@0
+            displayName: 'Instalar Terraform $(tfVersion)'
+            inputs:
+              terraformVersion: '$(tfVersion)'
+
+          - script: terraform fmt -check -recursive -diff
+            displayName: 'Terraform Fmt (check)'
+            workingDirectory: '$(modulesDirectory)'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(workingDirectory)'
+              backendServiceArm: '$(azureServiceConnection)'
+              backendAzureRmResourceGroupName: '$(backendResourceGroup)'
+              backendAzureRmStorageAccountName: '$(backendStorageAccount)'
+              backendAzureRmContainerName: '$(backendContainer)'
+              backendAzureRmKey: '$(backendKey)'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Validate'
+            inputs:
+              provider: 'azurerm'
+              command: 'validate'
+              workingDirectory: '$(workingDirectory)'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Plan'
+            inputs:
+              provider: 'azurerm'
+              command: 'plan'
+              workingDirectory: '$(workingDirectory)'
+              environmentServiceNameAzureRM: '$(azureServiceConnection)'
+              commandOptions: '-var-file="$(varFile)" -input=false -lock-timeout=5m -out=$(Build.ArtifactStagingDirectory)/tfplan'
+            env:
+              # Valores sensiveis entram por env var: -var-file tem precedencia
+              # sobre TF_VAR_*, por isso eles nao existem no homolog.tfvars.
+              TF_VAR_ssh_public_key: $(sshPublicKey)
+              TF_VAR_allowed_ssh_source: $(allowedSshSource)
+
+          - script: terraform show -no-color "$(Build.ArtifactStagingDirectory)/tfplan"
+            displayName: 'Exibir plan para revisao da aprovacao'
+            workingDirectory: '$(workingDirectory)'
+
+          - publish: $(Build.ArtifactStagingDirectory)/tfplan
+            artifact: tfplan
+            displayName: 'Publicar artefato tfplan'
+
+  # ==========================================================
+  # 3. Apply do plan aprovado. Somente na main e fora de PR.
+  # ==========================================================
+  - stage: Apply
+    displayName: 'Terraform Apply (homolog)'
+    dependsOn: ValidateAndPlan
+    condition: >-
+      and(
+        succeeded(),
+        eq(variables['Build.SourceBranch'], 'refs/heads/main'),
+        ne(variables['Build.Reason'], 'PullRequest'),
+        eq('${{ parameters.destroyEnvironment }}', 'false')
+      )
+    jobs:
+      - deployment: ApplyJob
+        displayName: 'Aplicar infraestrutura'
+        environment: 'Homolog-Infra' # Approval Gate configurado no Azure DevOps
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@0
+                  displayName: 'Instalar Terraform $(tfVersion)'
+                  inputs:
+                    terraformVersion: '$(tfVersion)'
+
+                - download: current
+                  artifact: tfplan
+                  displayName: 'Baixar artefato tfplan'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform Init'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'init'
+                    workingDirectory: '$(workingDirectory)'
+                    backendServiceArm: '$(azureServiceConnection)'
+                    backendAzureRmResourceGroupName: '$(backendResourceGroup)'
+                    backendAzureRmStorageAccountName: '$(backendStorageAccount)'
+                    backendAzureRmContainerName: '$(backendContainer)'
+                    backendAzureRmKey: '$(backendKey)'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'apply'
+                    workingDirectory: '$(workingDirectory)'
+                    environmentServiceNameAzureRM: '$(azureServiceConnection)'
+                    # O plan salvo ja carrega os valores das variaveis
+                    commandOptions: '-input=false -lock-timeout=5m $(Pipeline.Workspace)/tfplan/tfplan'
+
+                - script: terraform output -no-color
+                  displayName: 'Outputs do ambiente'
+                  workingDirectory: '$(workingDirectory)'
+
+  # ==========================================================
+  # 4. Destroy manual: rodar o pipeline com destroyEnvironment = true.
+  # ==========================================================
+  - stage: Destroy
+    displayName: 'Terraform Destroy (homolog)'
+    dependsOn: ValidateAndPlan
+    condition: >-
+      and(
+        succeeded(),
+        eq(variables['Build.SourceBranch'], 'refs/heads/main'),
+        ne(variables['Build.Reason'], 'PullRequest'),
+        eq('${{ parameters.destroyEnvironment }}', 'true')
+      )
+    jobs:
+      - deployment: DestroyJob
+        displayName: 'Destruir infraestrutura'
+        environment: 'Homolog-Infra'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@0
+                  displayName: 'Instalar Terraform $(tfVersion)'
+                  inputs:
+                    terraformVersion: '$(tfVersion)'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform Init'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'init'
+                    workingDirectory: '$(workingDirectory)'
+                    backendServiceArm: '$(azureServiceConnection)'
+                    backendAzureRmResourceGroupName: '$(backendResourceGroup)'
+                    backendAzureRmStorageAccountName: '$(backendStorageAccount)'
+                    backendAzureRmContainerName: '$(backendContainer)'
+                    backendAzureRmKey: '$(backendKey)'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform Destroy'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'destroy'
+                    workingDirectory: '$(workingDirectory)'
+                    environmentServiceNameAzureRM: '$(azureServiceConnection)'
+                    commandOptions: '-var-file="$(varFile)" -input=false -lock-timeout=5m'
+                  env:
+                    TF_VAR_ssh_public_key: $(sshPublicKey)
+                    TF_VAR_allowed_ssh_source: $(allowedSshSource)
