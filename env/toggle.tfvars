@@ -7,6 +7,24 @@
 # ser unicos no Azure recebem o sufixo definido em name_suffix.
 ###############################################################################
 
+###############################################################################
+# Autenticacao
+#
+# As credenciais do App Registration vem do ambiente (ver ./auth.tf):
+#   ARM_TENANT_ID / ARM_SUBSCRIPTION_ID / ARM_CLIENT_ID
+#   ARM_CLIENT_SECRET   ou   ARM_USE_OIDC=true
+#
+# Descomente abaixo se preferir fixar tenant e subscription aqui. O client
+# secret nunca entra neste arquivo - ele e versionado.
+###############################################################################
+
+# tenant_id       = "00000000-0000-0000-0000-000000000000"
+# subscription_id = "00000000-0000-0000-0000-000000000000"
+
+###############################################################################
+# Identificacao
+###############################################################################
+
 project     = "togglemaster"
 environment = "prod"
 location    = "eastus"
@@ -130,9 +148,14 @@ log_analytics_retention_days = 30
 ###############################################################################
 # Key Vault
 #
-# Preencha com os object IDs da equipe e da service connection do pipeline:
+# O App Registration que roda o terraform NAO precisa entrar aqui: o modulo ja
+# concede Key Vault Secrets Officer ao principal em execucao
+# (data.azurerm_client_config.current). Esta lista e para quem NAO roda o
+# terraform mas precisa ler ou gravar segredos - a equipe, e o App Registration
+# do pipeline de aplicacao, se for outro.
+#
 #   az ad signed-in-user show --query id -o tsv
-#   az ad sp show --id <app-id> --query id -o tsv
+#   az ad sp show --id <application-client-id> --query id -o tsv
 ###############################################################################
 
 key_vault_admin_object_ids         = []
