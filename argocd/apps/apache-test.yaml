@@ -1,0 +1,22 @@
+# Teste auto-contido (httpd publico) na raiz do repo -> namespace agrmudoufeladapulta.
+# Prova o loop GitOps sem depender de ACR nem secrets.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: apache-test
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://Oh20Tony@dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/TCF3%20-%20K8S'
+    targetRevision: main
+    path: .
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: agrmudoufeladapulta
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
