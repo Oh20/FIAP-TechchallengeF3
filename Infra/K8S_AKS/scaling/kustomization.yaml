@@ -1,9 +1,0 @@
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-# Os HPAs ficam na Application "platform". Como eles alteram spec.replicas dos
-# Deployments, as Applications de evaluation e analytics declaram ignoreDifferences
-# nesse campo para o ArgoCD nao ficar eternamente OutOfSync.
-resources:
-  - hpa-evaluation.yaml
-  - hpa-analytics.yaml
