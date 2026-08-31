@@ -1,4 +1,0 @@
-resource_group_name  = "rg-togglemaster-tfstate"
-storage_account_name = "sttogglemastertfstate"
-container_name       = "tfstate"
-key                  = "togglemaster-homolog.terraform.tfstate"
