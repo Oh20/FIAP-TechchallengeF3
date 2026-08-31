@@ -1,98 +1,59 @@
-# Resource Group
-resource "azurerm_resource_group" "rg" {
-  name     = var.resource_group_name
-  location = var.location
-  tags     = var.tags
-}
+###############################################################################
+# Ambiente ToggleMaster
+#
+# Este root module apenas instancia o modulo de plataforma. Toda a definicao
+# dos recursos vive em ../modules; os valores do ambiente vem de toggle.tfvars.
+#
+#   terraform init
+#   terraform plan  -var-file=toggle.tfvars
+#   terraform apply -var-file=toggle.tfvars
+###############################################################################
 
-# Azure Container Registry
-resource "azurerm_container_registry" "acr" {
-  name                = var.acr_name
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
-  sku                 = "Standard"
-  admin_enabled       = false
-  tags                = var.tags
-}
+module "togglemaster" {
+  source = "../modules"
 
-# AKS Cluster
-resource "azurerm_kubernetes_cluster" "aks" {
-  name                = var.aks_cluster_name
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  dns_prefix          = "togglemaster-k8s"
+  project     = var.project
+  environment = var.environment
+  location    = var.location
+  name_suffix = var.name_suffix
+  tags        = var.tags
 
-  default_node_pool {
-    name                = "systempool"
-    node_count          = 2
-    vm_size             = "Standard_B2s" # Ajustável conforme carga/orçamento
-    os_disk_size_gb     = 30
-    vnet_subnet_id      = azurerm_subnet.aks_subnet.id
-    enable_auto_scaling = true
-    min_count           = 2
-    max_count           = 4
-  }
+  # Rede
+  vnet_address_space  = var.vnet_address_space
+  aks_subnet_prefix   = var.aks_subnet_prefix
+  appgw_subnet_prefix = var.appgw_subnet_prefix
 
-  identity {
-    type = "SystemAssigned"
-  }
+  # AKS / ACR
+  kubernetes_version = var.kubernetes_version
+  aks_sku_tier       = var.aks_sku_tier
+  system_node_pool   = var.system_node_pool
+  app_node_pool      = var.app_node_pool
+  cicd_node_pool     = var.cicd_node_pool
+  acr_sku            = var.acr_sku
 
-  network_profile {
-    network_plugin    = "azure"
-    load_balancer_sku = "standard"
-  }
+  # PostgreSQL
+  postgres_servers        = var.postgres_servers
+  postgres_admin_user     = var.postgres_admin_user
+  postgres_admin_password = var.postgres_admin_password
+  postgres_allowed_cidrs  = var.postgres_allowed_cidrs
 
-  tags = var.tags
-}
+  # Cosmos DB
+  cosmos_database_name      = var.cosmos_database_name
+  cosmos_container_name     = var.cosmos_container_name
+  cosmos_partition_key_path = var.cosmos_partition_key_path
 
-# Permissão para o AKS puxar imagens do ACR sem credenciais estáticas
-resource "azurerm_role_assignment" "aks_acr_pull" {
-  principal_id                     = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
-  role_definition_name             = "AcrPull"
-  scope                            = azurerm_container_registry.acr.id
-  skip_service_principal_aad_check = true
-}
+  # Redis
+  redis = var.redis
 
-# Azure Service Bus (Tópico / Fila de Eventos)
-resource "azurerm_servicebus_namespace" "sb" {
-  name                = var.servicebus_namespace_name
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  sku                 = "Standard"
-  tags                = var.tags
-}
+  # Service Bus
+  servicebus_sku        = var.servicebus_sku
+  servicebus_queue_name = var.servicebus_queue_name
 
-resource "azurerm_servicebus_queue" "evaluations_queue" {
-  name         = "evaluation-events"
-  namespace_id = azurerm_servicebus_namespace.sb.id
-  enable_partitioning = false
-}
+  # Observabilidade
+  log_analytics_retention_days = var.log_analytics_retention_days
 
-# PostgreSQL Flexible Server
-resource "azurerm_postgresql_flexible_server" "postgres" {
-  name                   = var.postgres_server_name
-  resource_group_name    = azurerm_resource_group.rg.name
-  location               = azurerm_resource_group.rg.location
-  version                = "15"
-  administrator_login    = var.db_admin_user
-  administrator_password = var.db_admin_password
-  storage_mb             = 32768
-  sku_name               = "B_Standard_B1ms"
-  tags                   = var.tags
-}
-
-# Bancos de dados individuais para os microsserviços
-resource "azurerm_postgresql_flexible_server_database" "auth_db" {
-  name      = "auth_db"
-  server_id = azurerm_postgresql_flexible_server.postgres.id
-}
-
-resource "azurerm_postgresql_flexible_server_database" "flag_db" {
-  name      = "flag_db"
-  server_id = azurerm_postgresql_flexible_server.postgres.id
-}
-
-resource "azurerm_postgresql_flexible_server_database" "targeting_db" {
-  name      = "targeting_db"
-  server_id = azurerm_postgresql_flexible_server.postgres.id
+  # Key Vault
+  key_vault_admin_object_ids           = var.key_vault_admin_object_ids
+  key_vault_purge_protection_enabled   = var.key_vault_purge_protection_enabled
+  key_vault_soft_delete_retention_days = var.key_vault_soft_delete_retention_days
 }

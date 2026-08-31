@@ -1,36 +1,69 @@
-terraform {
-  required_version = ">= 1.5.0"
-  required_providers {
-    azurerm = {
-        source = "hashicorp/azurerm"
-        version = "~>3.90.0"
-    }
-  }
-  backend "azurerm" {
-    resource_group_name  = "rg-togglemaster-tfstate"
-    storage_account_name = "attogglemastertfstate"
-    container_name       = "tfstate"
-    key                  = "togglemaster.terrafor.tfstate"
-  }
+###############################################################################
+# Naming, contexto e Resource Group
+#
+# Todos os nomes derivam de project + environment. Recursos com nome
+# globalmente unico no Azure (ACR, Key Vault, Storage, Cosmos, Service Bus,
+# Redis, PostgreSQL) ganham um sufixo curto para evitar colisao.
+###############################################################################
+
+data "azurerm_client_config" "current" {}
+
+resource "random_string" "suffix" {
+  length  = 4
+  lower   = true
+  upper   = false
+  numeric = true
+  special = false
 }
 
-provider "azurerm" {
-  features {}
+locals {
+  suffix = var.name_suffix != "" ? var.name_suffix : random_string.suffix.result
+
+  # base com hifen, para recursos que aceitam hifen
+  base = "${var.project}-${var.environment}"
+
+  # base sem separador, para recursos que so aceitam alfanumerico
+  base_compact = "${var.project}${var.environment}"
+
+  # Key Vault aceita no maximo 24 caracteres e Storage Account 24 sem hifen;
+  # encurtar o projeto aqui garante que o nome nunca precise ser truncado
+  # (o que poderia deixa-lo terminando em hifen ou comer o sufixo unico).
+  project_kv = substr(var.project, 0, 12)
+  project_st = substr(var.project, 0, 8)
+
+  names = {
+    resource_group  = "rg-${local.base}"
+    vnet            = "vnet-${local.base}"
+    aks_subnet      = "snet-${local.base}-aks"
+    appgw_subnet    = "snet-${local.base}-appgw"
+    aks             = "aks-${local.base}"
+    aks_node_rg     = "rg-${local.base}-aks-nodes"
+    appgw           = "agw-${local.base}"
+    acr             = substr("acr${local.base_compact}${local.suffix}", 0, 50)
+    log_analytics   = "log-${local.base}"
+    storage_observ  = "st${local.project_st}${var.environment}obs${local.suffix}"
+    key_vault_app   = "kv-${local.project_kv}-app-${local.suffix}"
+    key_vault_infra = "kv-${local.project_kv}-inf-${local.suffix}"
+    cosmos          = "cosmos-${local.base}-${local.suffix}"
+    servicebus      = "sb-${local.base}-${local.suffix}"
+    redis           = "redis-${local.base}-${local.suffix}"
+  }
+
+  tags = merge(
+    {
+      projeto    = var.project
+      ambiente   = var.environment
+      gerenciado = "terraform"
+    },
+    var.tags,
+  )
+
+  # Senha do admin do PostgreSQL: usa a informada ou a gerada.
+  postgres_admin_password = var.postgres_admin_password != "" ? var.postgres_admin_password : random_password.postgres[0].result
 }
 
-# Resource Group
 resource "azurerm_resource_group" "rg" {
-  name     = var.resource-group_toggle-master
+  name     = local.names.resource_group
   location = var.location
-  tags     = var.tags
-}
-
-resource "azurerm_role_assignment" "aks_para_acr" {
-
-  scope                = azurerm_container_registry.meu_acr.id
-  
-
-  role_definition_name = "AcrPull"
-  
-  principal_id         = azurerm_kubernetes_cluster.meu_aks.kubelet_identity[0].object_id
+  tags     = local.tags
 }
