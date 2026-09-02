@@ -23,7 +23,7 @@ o mesmo módulo com outro `environment` e outra `key` de state.
 
 | Bloco do diagrama | Recursos |
 | --- | --- |
-| AKS | Cluster com 3 node pools: `systempool`, `apppool` (App), `cicdpool` (Argo CD, com taint `workload=cicd:NoSchedule`) |
+| AKS | Cluster com `systempool` e `apppool` (App). O `cicdpool` existe no módulo mas vem desligado — ver *Restrições da subscription* |
 | AppGateway + AGIC | Addon `ingress_application_gateway`, em subnet dedicada — atende o Ingress com a classe `azure/application-gateway` |
 | ACR | Registry com `admin_enabled = false`; o kubelet puxa imagens via role `AcrPull` |
 | Managed DB | 3 PostgreSQL Flexible Server (auth, flag, targeting) + Cosmos DB serverless (analytics) + Azure Cache for Redis (evaluation) |
@@ -129,7 +129,7 @@ az storage account check-name --name attogglemastertfstate
 | `name_suffix` | `""` (gera aleatório) | Fixe um valor se quiser nomes previsíveis entre ambientes |
 | `project` / `environment` | `togglemaster` / `prod` | Compõem o nome de todos os recursos |
 | `aks_sku_tier` | `Free` | `Standard` para SLA do control plane |
-| `system_node_pool` / `app_node_pool` / `cicd_node_pool` | `Standard_B2s` | Carga real: `Standard_D2s_v5` |
+| `system_node_pool` / `app_node_pool` | `Standard_D2as_v7` | `Standard_B2s` não existe na subscription atual — ver *Restrições da subscription* |
 | `postgres_servers[*].sku_name` | `B_Standard_B1ms` | Carga real |
 | `redis.sku_name` | `Basic` / C0 | `Standard` para réplica |
 
@@ -185,7 +185,8 @@ az aks get-credentials \
 kubectl get nodes
 ```
 
-Devem aparecer os três node pools: `systempool`, `apppool`, `cicdpool`.
+Devem aparecer `systempool` (1 node) e `apppool` (2 nodes). O `cicdpool` vem
+desligado em `toggle.tfvars`.
 
 ---
 
@@ -306,10 +307,15 @@ kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath="{.data.password}" | base64 -d; echo
 ```
 
-O `cicdpool` tem taint `workload=cicd:NoSchedule`. Sem tolerância o Argo sobe no
-`apppool` — funciona, mas some a separação App / CI-CD do diagrama. Para
-respeitá-la, adicione aos deployments `argocd-server`, `argocd-repo-server` e
-`argocd-application-controller`:
+Com `cicd_node_pool.enabled = false` (o default atual, por causa da quota de
+vCPU), o Argo sobe no `apppool` e não há nada a fazer aqui — funciona, mas some
+a separação App / CI-CD do diagrama.
+
+Para respeitá-la, ligue o pool no `toggle.tfvars` **e** adicione o par
+tolerância + `nodeSelector` abaixo aos deployments `argocd-server`,
+`argocd-repo-server` e `argocd-application-controller`. Os dois são
+necessários: o pool tem taint `workload=cicd:NoSchedule`, então sem tolerância
+nada é agendado nele, e sem `nodeSelector` o Argo continua caindo no `apppool`.
 
 ```yaml
 tolerations:
@@ -410,8 +416,31 @@ terraform output -raw  servicebus_connection_string
 
 ## Custo
 
-Os defaults são de laboratório: `Standard_B2s` nos nodes, `B_Standard_B1ms` no
-PostgreSQL, Redis Basic C0, Cosmos serverless, AKS no tier `Free`.
+Os defaults são de laboratório: `Standard_D2as_v7` nos nodes, `B_Standard_B1ms`
+no PostgreSQL, Redis Basic C0, Cosmos serverless, AKS no tier `Free`.
+
+O `D2as_v7` custa cerca do dobro do `Standard_B2s` que o projeto usava antes —
+não por escolha, mas porque a família B x86 não é oferecida na subscription
+(ver abaixo). Somando Application Gateway Standard_v2, três Flexible Servers e
+Redis, uma subscription *Azure for Students* (US$ 100) não aguenta o ambiente
+ligado o mês inteiro. Rode `terraform destroy` entre as sessões de trabalho.
+
+## Restrições da subscription
+
+Levantado numa subscription *Azure for Students*. Confira antes de assumir que
+valem para a sua:
+
+| Restrição | Efeito | Como conferir |
+|---|---|---|
+| Família B x86 indisponível em `eastus` | `Standard_B2s` falha no create do AKS com 400 `BadRequest` | `az vm list-skus -l eastus --size Standard_B2s` |
+| `D2s_v3` / `D2s_v4` / `D2ds_v4` com restrição de zona | Só `Standard_D2as_v7` e `Standard_D2s_v7` ficam limpos | `az vm list-skus -l eastus -o json` e olhar `restrictions` |
+| Quota de vCPU baixa | `Total Regional` 14, `Standard Dasv7 Family` 10 — no máximo 5 nodes de 2 vCPU | `az vm list-usage -l eastus -o table` |
+| PostgreSQL bloqueado em `eastus` | Create falha com `ParameterOutOfRange: The value of the 'Version' should be in: []`, que **não** é erro de versão nem de SKU | `az postgres flexible-server list-skus -l eastus --query "[0].reason"` |
+
+A última é a razão de `postgres_location = "eastus2"` no `toggle.tfvars`: os
+Flexible Servers ficam na região par, poucos ms de distância, e o resto do
+ambiente continua em `eastus`. Se a sua subscription não tiver esse bloqueio,
+deixe `postgres_location = ""` e tudo volta para uma região só.
 
 ## Decisões que valem registrar
 

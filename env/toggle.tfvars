@@ -50,33 +50,51 @@ appgw_subnet_prefix = "10.20.16.0/24"
 ###############################################################################
 # AKS
 #
-# Standard_B2s mantem o custo baixo para o laboratorio. Para uma carga real,
-# troque por Standard_D2s_v5 e aks_sku_tier = "Standard".
+# Standard_B2s NAO esta disponivel nesta subscription (Azure for Students):
+# a familia B x86 nao e oferecida em eastus. Os unicos SKUs x64 de 2 vCPU sem
+# restricao na regiao sao Standard_D2as_v7 e Standard_D2s_v7 - conferir com:
+#
+#   az vm list-skus -l eastus --size Standard_D2as_v7 --query "[].restrictions"
+#
+# Os *_v2 da lista que o Azure sugere no erro (b2ps_v2 etc.) sao ARM64 e
+# exigiriam reconstruir as imagens dos microsservicos.
+#
+# Quota da subscription (az vm list-usage -l eastus):
+#   Total Regional vCPUs       14
+#   Standard Dasv7 Family      10   <- o teto que importa aqui
+#
+# Por isso os pools sao pequenos: 1 + 2 = 3 nodes = 6 vCPU no estado normal,
+# com no maximo 2 + 3 = 5 nodes = 10 vCPU se o autoscaler subir tudo. Passar
+# disso faz o autoscaler falhar em runtime, sem erro no terraform.
 ###############################################################################
 
 aks_sku_tier = "Free"
 
 system_node_pool = {
-  vm_size    = "Standard_B2s"
-  node_count = 2
-  min_count  = 2
-  max_count  = 3
+  vm_size    = "Standard_D2as_v7"
+  node_count = 1
+  min_count  = 1
+  max_count  = 2
 }
 
 app_node_pool = {
   enabled    = true
-  vm_size    = "Standard_B2s"
+  vm_size    = "Standard_D2as_v7"
   node_count = 2
-  min_count  = 2
-  max_count  = 5
-}
-
-cicd_node_pool = {
-  enabled    = true
-  vm_size    = "Standard_B2s"
-  node_count = 1
   min_count  = 1
   max_count  = 3
+}
+
+# Desligado: o pool sobe com o taint workload=cicd:NoSchedule e nenhum manifesto
+# em ../../infra declara a tolerancia correspondente - ou seja, nada seria
+# agendado nele. O Argo CD roda no apppool. Ligue junto com os nodeSelector /
+# tolerations nos manifestos, e so se houver quota sobrando.
+cicd_node_pool = {
+  enabled    = false
+  vm_size    = "Standard_D2as_v7"
+  node_count = 1
+  min_count  = 1
+  max_count  = 1
 }
 
 acr_sku = "Standard"
@@ -87,6 +105,16 @@ acr_sku = "Standard"
 # Um servidor por microsservico. Os nomes de database batem com os
 # secret.example.yaml de ../../infra/base.
 ###############################################################################
+
+# PostgreSQL Flexible Server esta BLOQUEADO em eastus nesta subscription. A API
+# de capabilities responde "Provisioning is restricted in this region", e o erro
+# que chega no apply e enganoso: "The value of the 'Version' should be in: []".
+# Nao adianta mudar version nem sku_name - a regiao inteira esta fechada.
+#
+# eastus2 e regiao par de eastus (latencia de poucos ms) e aceita Burstable +
+# versao 16. Conferir antes de trocar:
+#   az postgres flexible-server list-skus -l <regiao> --query "[0].reason"
+postgres_location = "eastus2"
 
 postgres_admin_user = "admintogglemaster"
 

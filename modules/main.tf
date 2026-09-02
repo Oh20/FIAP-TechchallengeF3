@@ -58,6 +58,11 @@ locals {
     var.tags,
   )
 
+  # Regiao do PostgreSQL. Normalmente e a do ambiente; vira outra quando a
+  # subscription bloqueia o provisionamento de Flexible Server na regiao
+  # principal (ver var.postgres_location).
+  postgres_location = var.postgres_location != "" ? var.postgres_location : var.location
+
   # Senha do admin do PostgreSQL: usa a informada ou a gerada.
   postgres_admin_password = var.postgres_admin_password != "" ? var.postgres_admin_password : random_password.postgres[0].result
 }

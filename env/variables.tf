@@ -144,6 +144,12 @@ variable "acr_sku" {
 # PostgreSQL
 ###############################################################################
 
+variable "postgres_location" {
+  type        = string
+  description = "Regiao dos Flexible Servers. Vazio usa a mesma regiao do ambiente (var.location). Existe porque algumas subscriptions bloqueiam o provisionamento de PostgreSQL em certas regioes - o erro aparece como \"The value of the 'Version' should be in: []\"."
+  default     = ""
+}
+
 variable "postgres_servers" {
   type = map(object({
     database_name = string

@@ -30,7 +30,9 @@ resource "azurerm_postgresql_flexible_server" "postgres" {
 
   name                = "psql-${each.key}-${local.base}-${local.suffix}"
   resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
+
+  # Pode divergir da regiao do Resource Group - ver local.postgres_location.
+  location = local.postgres_location
 
   version                = each.value.version
   sku_name               = each.value.sku_name

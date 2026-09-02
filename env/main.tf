@@ -32,6 +32,7 @@ module "togglemaster" {
   acr_sku            = var.acr_sku
 
   # PostgreSQL
+  postgres_location       = var.postgres_location
   postgres_servers        = var.postgres_servers
   postgres_admin_user     = var.postgres_admin_user
   postgres_admin_password = var.postgres_admin_password
