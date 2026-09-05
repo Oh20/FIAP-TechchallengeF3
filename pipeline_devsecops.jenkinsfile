@@ -2,21 +2,21 @@ pipeline {
     agent any
 
     environment {
-        REPORTS_DIR     = "${WORKSPACE}/security-reports"
-        APP_URL         = "http://staging.minhaapp.local"
-        TF_REPO_DIR     = "${WORKSPACE}/src/terraform"
+        REPORTS_DIR     = "${WORKSPACE}/security-reports" // Cria um local de armazenamento dos relatórios 
+        APP_URL         = "http://staging.minhaapp.local" // Local do ambiente em que será coletado as métricas
+        TF_REPO_DIR     = "${WORKSPACE}/src/terraform" // Cria um atalho nos scripts de infraestrutura para leitura
 
         // Configurações do Azure & Azure Container Registry (ACR)
-        AZURE_RESOURCE_GROUP = "rg-togglemaster-f3"
-        ACR_NAME             = "acrtogglemasterf3"
-        IMAGE_TAG            = "${BUILD_NUMBER}"
-        ACR_REGISTRY         = "${ACR_NAME}.azurecr.io"
+        AZURE_RESOURCE_GROUP = "rg-toggle-master" // Define o resource Group
+        ACR_NAME             = "acr-toggle-master" // Define o nome Do ACR
+        IMAGE_TAG            = "${BUILD_NUMBER}" // Define a versão imagem que será usado no ACR/AKS
+        ACR_REGISTRY         = "${ACR_NAME}.azurecr.io" // Define a URL do seu ACR
 
         // Repositório de IaC (Terraform)
-        AZURE_TF_REPO   = "https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/terraform%20-%20F3"
+        AZURE_TF_REPO   = "https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/terraform%20-%20F3" //Repositório do Terraform
 
         // OWASP DefectDojo (Credenciais Jenkins)
-        DEFECTDOJO_URL  = "http://defectdojo.local:8080"
+        DEFECTDOJO_URL  = "http://defectdojo.local:8080" 
         DEFECTDOJO_KEY  = credentials('defectdojo-api-key')
         
         PROTECTED_BRANCH = "main"
@@ -34,19 +34,43 @@ pipeline {
                     // Definição das Aplicações do Ecossistema
                     def apps = [
                         [
-                            name: 'toggle-master-f3',
+                            name: 'analytics-service',
                             gitUrl: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3',
-                            dir: "${WORKSPACE}/src/toggle-master-f3",
+                            dir: "${WORKSPACE}/src/analytics-service",
                             images: [
-                                [name: 'toggle-master-api', path: '.']
+                                [name: 'analytics-service', path: '/app/analytics-service']
                             ]
                         ],
                         [
-                            name: 'notification-service',
-                            gitUrl: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20NotificationService',
-                            dir: "${WORKSPACE}/src/notification-service",
+                            name: 'auth-service',
+                            gitUrl: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3',
+                            dir: "${WORKSPACE}/src/auth-service",
                             images: [
-                                [name: 'notification-service-worker', path: '.']
+                                [name: 'auth-service', path: '/app/auth-service']
+                            ]
+                        ],
+                        [
+                            name: 'evaluation-service',
+                            gitUrl: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3',
+                            dir: "${WORKSPACE}/src/evaluation-service",
+                            images: [
+                                [name: 'evaluation-service', path: '/app/evaluation-service']
+                            ]
+                        ],
+                        [
+                            name: 'flag-service',
+                            gitUrl: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3',
+                            dir: "${WORKSPACE}/src/flag-service",
+                            images: [
+                                [name: 'flag-service', path: '/app/flag-service']
+                            ]
+                        ],
+                        [
+                            name: 'targeting-service',
+                            gitUrl: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3',
+                            dir: "${WORKSPACE}/src/targeting-service",
+                            images: [
+                                [name: 'targeting-service', path: '/app/targeting-service']
                             ]
                         ]
                     ]
@@ -126,17 +150,6 @@ pipeline {
                             docker run --rm -v "${WORKSPACE}/src:/src" -v "${REPORTS_DIR}:/reports" aquasec/trivy:latest config \
                                 --format json \
                                 --output /reports/trivy-iac.json /src || true
-                        '''
-                    }
-                }
-                stage('Checkov') {
-                    steps {
-                        sh '''
-                            docker run --rm -v "${WORKSPACE}/src:/src" bridgecrew/checkov:latest \
-                                -d /src \
-                                --framework terraform dockerfile \
-                                --compact \
-                                -o json > ${REPORTS_DIR}/checkov-report.json || true
                         '''
                     }
                 }
@@ -329,7 +342,7 @@ EOF
                         def scanType = "Trivy Scan" // Default Fallback
 
                         if (fileName.contains("gitleaks")) scanType = "Gitleaks Scan"
-                        else if (fileName.contains("checkov")) scanType = "Checkov Scan"
+                        else if (fileName.contains("trivy-iac")) scanType = "Trivy-Iac Scan" 
                         else if (fileName.contains("hadolint")) scanType = "Hadolint Scan"
                         else if (fileName.contains("horusec")) scanType = "Horusec Scan"
                         else if (fileName.contains("azure-acr")) scanType = "Azure ACR Scan"
