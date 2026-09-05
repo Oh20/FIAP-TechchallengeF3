@@ -1,0 +1,418 @@
+pipeline {
+    agent any
+
+    environment {
+        REPORTS_DIR     = "${WORKSPACE}/security-reports"
+        APP_URL         = "http://staging.minhaapp.local"
+        TF_REPO_DIR     = "${WORKSPACE}/src/terraform"
+
+        // Configurações do Azure & Azure Container Registry (ACR)
+        AZURE_RESOURCE_GROUP = "rg-togglemaster-f3"
+        ACR_NAME             = "acrtogglemasterf3"
+        IMAGE_TAG            = "${BUILD_NUMBER}"
+        ACR_REGISTRY         = "${ACR_NAME}.azurecr.io"
+
+        // Repositório de IaC (Terraform)
+        AZURE_TF_REPO   = "https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/terraform%20-%20F3"
+
+        // OWASP DefectDojo (Credenciais Jenkins)
+        DEFECTDOJO_URL  = "http://defectdojo.local:8080"
+        DEFECTDOJO_KEY  = credentials('defectdojo-api-key')
+        
+        PROTECTED_BRANCH = "main"
+    }
+
+    stages {
+        // ==========================================
+        // ETAPA 0: PREPARAÇÃO & CHECKOUT MULTI-APP
+        // ==========================================
+        stage('0. Preparar Ambiente & Checkout de Múltiplos Apps') {
+            steps {
+                script {
+                    sh "mkdir -p ${REPORTS_DIR} ${WORKSPACE}/src"
+                    
+                    // Definição das Aplicações do Ecossistema
+                    def apps = [
+                        [
+                            name: 'toggle-master-f3',
+                            gitUrl: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3',
+                            dir: "${WORKSPACE}/src/toggle-master-f3",
+                            images: [
+                                [name: 'toggle-master-api', path: '.']
+                            ]
+                        ],
+                        [
+                            name: 'notification-service',
+                            gitUrl: 'https://dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20NotificationService',
+                            dir: "${WORKSPACE}/src/notification-service",
+                            images: [
+                                [name: 'notification-service-worker', path: '.']
+                            ]
+                        ]
+                    ]
+
+                    // Salva a estrutura em JSON para consumo nos stages seguintes
+                    writeJSON file: "${WORKSPACE}/apps-config.json", json: apps
+
+                    withCredentials([usernamePassword(credentialsId: 'azure-devops-pat', usernameVariable: 'AZ_USER', passwordVariable: 'AZ_PAT')]) {
+                        // 1. Checkout de cada Repositório de Aplicação
+                        apps.each { app ->
+                            echo "=== Checkout do App: ${app.name} ==="
+                            sh """
+                                rm -rf ${app.dir}
+                                git clone https://${AZ_USER}:${AZ_PAT}@${app.gitUrl.replace('https://', '')} ${app.dir}
+                                
+                                if [ -n "${SYSTEM_PULLREQUEST_SOURCEBRANCH}" ]; then
+                                    cd ${app.dir}
+                                    git fetch origin ${PROTECTED_BRANCH}
+                                    git config user.email "jenkins@ci.local"
+                                    git config user.name "Jenkins CI"
+                                    git merge origin/${PROTECTED_BRANCH} --no-commit --no-ff || (echo "ERRO: Branch desatualizada no app ${app.name}!" && exit 1)
+                                fi
+                            """
+                        }
+
+                        // 2. Checkout do Repositório de IaC (Terraform)
+                        echo "=== Checkout do Repositório IaC: terraform - F3 ==="
+                        sh """
+                            rm -rf ${TF_REPO_DIR}
+                            git clone https://${AZ_USER}:${AZ_PAT}@${AZURE_TF_REPO.replace('https://', '')} ${TF_REPO_DIR}
+                        """
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // ETAPA 0.1: PRE-COMMIT HOOKS MULTI-APP
+        // ==========================================
+        stage('0.1. Pre-Commit Hooks Validation (Multi-App)') {
+            steps {
+                script {
+                    def apps = readJSON file: "${WORKSPACE}/apps-config.json"
+                    apps.each { app ->
+                        echo "=== Executando Pre-Commit Hooks no App: ${app.name} ==="
+                        sh """
+                            docker run --rm -v "${app.dir}:/src" -w /src python:3.11-slim bash -c "
+                                pip install pre-commit && \
+                                pre-commit run --all-files
+                            " || true
+                        """
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // ETAPA 1: SHIFT-LEFT (PARALELO)
+        // ==========================================
+        stage('1. Shift-Left: Scanning & Linting (Workspace Completo)') {
+            parallel {
+                stage('Gitleaks (Secret Scanning)') {
+                    steps {
+                        sh '''
+                            docker run --rm -v "${WORKSPACE}/src:/path" zricethezav/gitleaks:latest detect \
+                                --source="/path" \
+                                --report-format=json \
+                                --report-path="/path/../security-reports/gitleaks.json" \
+                                --redact \
+                                --exit-code=0
+                        '''
+                    }
+                }
+                stage('Trivy IaC') {
+                    steps {
+                        sh '''
+                            docker run --rm -v "${WORKSPACE}/src:/src" -v "${REPORTS_DIR}:/reports" aquasec/trivy:latest config \
+                                --format json \
+                                --output /reports/trivy-iac.json /src || true
+                        '''
+                    }
+                }
+                stage('Checkov') {
+                    steps {
+                        sh '''
+                            docker run --rm -v "${WORKSPACE}/src:/src" bridgecrew/checkov:latest \
+                                -d /src \
+                                --framework terraform dockerfile \
+                                --compact \
+                                -o json > ${REPORTS_DIR}/checkov-report.json || true
+                        '''
+                    }
+                }
+                stage('Hadolint (Varredura de Dockerfiles)') {
+                    steps {
+                        sh '''
+                            find ${WORKSPACE}/src -name "Dockerfile*" | while read df; do
+                                rel_path=$(echo "$df" | sed "s|${WORKSPACE}/src/||g" | tr '/' '_')
+                                docker run --rm -i hadolint/hadolint:latest hadolint -f json - < "$df" > "${REPORTS_DIR}/hadolint-${rel_path}.json" || true
+                            done
+                        '''
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // ETAPA 2: SAST (HORUSEC MULTI-APP)
+        // ==========================================
+        stage('2. SAST (Horusec por Aplicação)') {
+            steps {
+                script {
+                    def apps = readJSON file: "${WORKSPACE}/apps-config.json"
+                    apps.each { app ->
+                        echo "=== Horusec SAST: ${app.name} ==="
+                        sh """
+                            docker run --rm -v "${app.dir}:/src" horusec/horusec-cli:latest horusec start \
+                                -p="/src" \
+                                -o="json" \
+                                -O="/src/../../security-reports/horusec-${app.name}.json" \
+                                --disable-docker=true || true
+                        """
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // ETAPA 3: SCA (TRIVY FS MULTI-APP)
+        // ==========================================
+        stage('3. SCA (Trivy FS por Aplicação)') {
+            steps {
+                script {
+                    def apps = readJSON file: "${WORKSPACE}/apps-config.json"
+                    apps.each { app ->
+                        echo "=== Trivy SCA: Dependências em ${app.name} ==="
+                        sh """
+                            docker run --rm -v "${app.dir}:/src" -v "${REPORTS_DIR}:/reports" aquasec/trivy:latest fs \
+                                --scanners vuln \
+                                --format json \
+                                --output /reports/trivy-sca-${app.name}.json /src || true
+                        """
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // ETAPA 4: SBOM & BUILD/SCAN LOCAL DE IMAGENS
+        // ==========================================
+        stage('4. Gerar SBOMs & Build/Scan de Imagens (Multi-App)') {
+            steps {
+                script {
+                    def apps = readJSON file: "${WORKSPACE}/apps-config.json"
+
+                    apps.each { app ->
+                        echo "=== Gerando SBOMs para: ${app.name} ==="
+                        sh """
+                            docker run --rm -v "${app.dir}:/src" -v "${REPORTS_DIR}:/reports" aquasec/trivy:latest fs \
+                                --format cyclonedx --output /reports/sbom-cyclonedx-${app.name}.json /src
+                            docker run --rm -v "${app.dir}:/src" -v "${REPORTS_DIR}:/reports" aquasec/trivy:latest fs \
+                                --format spdx-json --output /reports/sbom-spdx-${app.name}.json /src
+                        """
+
+                        app.images.each { img ->
+                            def fullImageName = "${ACR_REGISTRY}/${img.name}:${IMAGE_TAG}"
+                            def imgContextPath = "${app.dir}/${img.path}"
+
+                            echo "=== Build & Scan Local da Imagem: ${fullImageName} ==="
+                            sh """
+                                docker build -t ${fullImageName} -t ${ACR_REGISTRY}/${img.name}:latest ${imgContextPath}
+                                docker run --rm -v "${REPORTS_DIR}:/reports" aquasec/trivy:latest image \
+                                    --format json \
+                                    --output /reports/trivy-image-${img.name}.json ${fullImageName} || true
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // ETAPA 5: AZURE ACR (PUSH, SCAN NATIVO & COSIGN MULTI-APP)
+        // ==========================================
+        stage('5. Azure ACR: Push, Native Scan & Cosign (Multi-App)') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'azure-service-principal', usernameVariable: 'AZURE_CLIENT_ID', passwordVariable: 'AZURE_CLIENT_SECRET')]) {
+                    script {
+                        def apps = readJSON file: "${WORKSPACE}/apps-config.json"
+
+                        echo "=== Autenticação Azure CLI & ACR ==="
+                        sh """
+                            docker run --rm mcr.microsoft.com/azure-cli az login --service-principal \
+                                -u ${AZURE_CLIENT_ID} -p ${AZURE_CLIENT_SECRET} --tenant \$AZURE_TENANT_ID
+
+                            TOKEN=\$(docker run --rm mcr.microsoft.com/azure-cli az acr login --name ${ACR_NAME} --expose-token --query accessToken -o tsv)
+                            docker login ${ACR_REGISTRY} -u 00000000-0000-0000-0000-000000000000 -p \${TOKEN}
+                        """
+
+                        // Gera a chave do Cosign no workspace
+                        sh 'docker run --rm -v "${WORKSPACE}:/workspace" -w /workspace bitnami/cosign:latest generate-key-pair || true'
+
+                        apps.each { app ->
+                            app.images.each { img ->
+                                def fullImageName = "${ACR_REGISTRY}/${img.name}:${IMAGE_TAG}"
+                                echo "=== Push, Scan Nativo ACR e Cosign para: ${fullImageName} ==="
+
+                                sh """
+                                    # Push da imagem
+                                    docker push ${fullImageName}
+                                    docker push ${ACR_REGISTRY}/${img.name}:latest
+
+                                    # Scan do Microsoft Defender / ACR Assessment
+                                    docker run --rm mcr.microsoft.com/azure-cli az acr repository show-manifests \
+                                        --name ${ACR_NAME} --repository ${img.name} --detail --output json > ${REPORTS_DIR}/azure-acr-${img.name}.json || true
+
+                                    # Assinatura e Verificação de Integridade (Cosign)
+                                    TOKEN=\$(docker run --rm mcr.microsoft.com/azure-cli az acr login --name ${ACR_NAME} --expose-token --query accessToken -o tsv)
+                                    
+                                    docker run --rm -v "${WORKSPACE}:/workspace" -w /workspace \
+                                        -e COSIGN_PASSWORD="" \
+                                        bitnami/cosign:latest sign \
+                                        --key /workspace/cosign.key \
+                                        -u 00000000-0000-0000-0000-000000000000 -p \${TOKEN} \
+                                        ${fullImageName} || true
+
+                                    docker run --rm -v "${WORKSPACE}:/workspace" -w /workspace \
+                                        bitnami/cosign:latest verify \
+                                        --key /workspace/cosign.pub \
+                                        ${fullImageName} > ${REPORTS_DIR}/cosign-verify-${img.name}.json || true
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // ETAPA 6: DAST COM ZAP-RULES (OWASP ZAP)
+        // ==========================================
+        stage('6. DAST / Pentest Automatizado (OWASP ZAP com zap-rules.tsv)') {
+            steps {
+                sh '''
+                    echo "=== Criando/Garantindo o arquivo zap-rules.tsv ==="
+                    cat << 'EOF' > ${WORKSPACE}/zap-rules.tsv
+10015	IGNORE	(Recomendações de Insecure P3P Header)
+10020	IGNORE	(X-Frame-Options Header Not Set)
+10021	IGNORE	(X-Content-Type-Options Header Missing)
+10038	WARN	(Content Security Policy Header Not Set)
+10096	WARN	(Timestamp Disclosure - Unix)
+10037	IGNORE	(Server Leaks Information via HTTP Response Header)
+10054	IGNORE	(Cookie without SameSite Attribute)
+EOF
+
+                    echo "=== Executando OWASP ZAP Baseline com regras zap-rules.tsv ==="
+                    docker run --rm \
+                        -v "${WORKSPACE}:/zap/src/:rw" \
+                        -v "${REPORTS_DIR}:/zap/wrk/:rw" \
+                        zaproxy/zap-stable zap-baseline.py \
+                        -t ${APP_URL} \
+                        -c /zap/src/zap-rules.tsv \
+                        -J zap-report.json || true
+                '''
+            }
+        }
+
+        // ==========================================
+        // ETAPA 7: CENTRALIZAÇÃO DINÂMICA NO DEFECTDOJO
+        // ==========================================
+        stage('7. Centralização de Achados no OWASP DefectDojo') {
+            steps {
+                script {
+                    echo "=== Centralizando todos os relatórios dos múltiplos apps no DefectDojo ==="
+                    
+                    def reportFiles = sh(script: "ls ${REPORTS_DIR}/*.json", returnStdout: true).trim().split('\n')
+
+                    reportFiles.each { filePath ->
+                        def fileName = filePath.substring(filePath.lastIndexOf('/') + 1)
+                        def scanType = "Trivy Scan" // Default Fallback
+
+                        if (fileName.contains("gitleaks")) scanType = "Gitleaks Scan"
+                        else if (fileName.contains("checkov")) scanType = "Checkov Scan"
+                        else if (fileName.contains("hadolint")) scanType = "Hadolint Scan"
+                        else if (fileName.contains("horusec")) scanType = "Horusec Scan"
+                        else if (fileName.contains("azure-acr")) scanType = "Azure ACR Scan"
+                        else if (fileName.contains("cyclonedx")) scanType = "CycloneDX Scan"
+                        else if (fileName.contains("spdx")) scanType = "SPDX CycloneDX Scan"
+                        else if (fileName.contains("zap")) scanType = "ZAP Scan"
+
+                        sh """
+                            curl -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+                                -H "Authorization: Token ${DEFECTDOJO_KEY}" \
+                                -F "scan_type=${scanType}" \
+                                -F "product_name=toggle-master-f3" \
+                                -F "engagement_name=Build #${BUILD_NUMBER}" \
+                                -F "file=@${filePath}" \
+                                -F "close_old_findings=true" \
+                                -F "auto_create_context=true"
+                        """
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // ETAPA 8: QUALITY GATE UNIFICADO
+        // ==========================================
+        stage('8. Quality Gate & Workflow de Negação Global') {
+            steps {
+                script {
+                    sleep 5
+
+                    def response = sh(
+                        script: """
+                            curl -s -X GET "${DEFECTDOJO_URL}/api/v2/findings/?test__engagement__name=Build%20%23${BUILD_NUMBER}&active=true&verified=true&duplicate=false" \
+                            -H "Authorization: Token ${DEFECTDOJO_KEY}"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    def jsonSlurper = new groovy.json.JsonSlurper()
+                    def data = jsonSlurper.parseText(response)
+
+                    def criticalCount = 0
+                    def highCount = 0
+
+                    data.results.each { finding ->
+                        if (finding.severity == 'Critical') criticalCount++
+                        if (finding.severity == 'High') highCount++
+                    }
+
+                    echo "Resumo de Segurança de Todas as Aplicações -> CRITICAL: ${criticalCount} | HIGH: ${highCount}"
+
+                    if (criticalCount > 0 || highCount > 0) {
+                        error "QUALITY GATE REPROVADO: Encontradas ${criticalCount} vulnerabilidades CRITICAL e ${highCount} HIGH nos apps. Pipeline abortado!"
+                    } else {
+                        echo "QUALITY GATE APROVADO: Todas as aplicações estão em conformidade de segurança."
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // ETAPA 9: DEPLOY NO AZURE AKS (MAIN ONLY)
+        // ==========================================
+        stage('9. Deploy Multi-App no Azure AKS (Main Only)') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo "=== BRANCH MAIN DETECTADA & QUALITY GATE APROVADO ==="
+                    echo "Iniciando deploy de todas as aplicações e imagens assinadas no Azure AKS..."
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true
+            cleanWs deleteDirs: false, notFailBuild: true
+        }
+        failure {
+            echo "Notificação: Pipeline reprovado devido a falhas em uma ou mais aplicações."
+        }
+    }
+}
