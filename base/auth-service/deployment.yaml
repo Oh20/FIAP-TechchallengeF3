@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: auth-service
-          image: fiapdevopsadegj.azurecr.io/auth-service:latest
+          image: acrtogglemasterprod6k07.azurecr.io/auth-service:latest
           imagePullPolicy: Always
           ports:
             - name: http

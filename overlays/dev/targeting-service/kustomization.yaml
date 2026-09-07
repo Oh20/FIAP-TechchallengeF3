@@ -4,5 +4,5 @@ namespace: toggle-apps
 resources:
   - ../../../base/targeting-service
 images:
-  - name: fiapdevopsadegj.azurecr.io/targeting-service
+  - name: acrtogglemasterprod6k07.azurecr.io/targeting-service
     newTag: latest

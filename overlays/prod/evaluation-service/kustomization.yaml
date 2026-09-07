@@ -4,5 +4,5 @@ namespace: toggle-apps
 resources:
   - ../../../base/evaluation-service
 images:
-  - name: fiapdevopsadegj.azurecr.io/evaluation-service
+  - name: acrtogglemasterprod6k07.azurecr.io/evaluation-service
     newTag: latest

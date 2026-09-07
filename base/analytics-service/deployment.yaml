@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: analytics-service
-          image: fiapdevopsadegj.azurecr.io/analytics-service:latest
+          image: acrtogglemasterprod6k07.azurecr.io/analytics-service:latest
           imagePullPolicy: Always
           ports:
             - name: http

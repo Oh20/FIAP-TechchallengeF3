@@ -4,5 +4,5 @@ namespace: toggle-apps
 resources:
   - ../../../base/flag-service
 images:
-  - name: fiapdevopsadegj.azurecr.io/flag-service
+  - name: acrtogglemasterprod6k07.azurecr.io/flag-service
     newTag: latest
