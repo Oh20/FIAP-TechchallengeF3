@@ -19,13 +19,14 @@
 #                                                                   que sobe pod)
 #   03  instala o Argo CD e aplica o App-of-Apps
 #   04  roda as migrations, que leem DATABASE_URL dos Secrets da 02
+#   05  registra a SERVICE_API_KEY na tabela api_keys, que a 04 acabou de criar
 # =============================================================================
 
 set -eu
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-ETAPAS="${ETAPAS:-01 02 03 04}"
+ETAPAS="${ETAPAS:-01 02 03 04 05}"
 
 for etapa in $ETAPAS; do
     script=$(ls "${DIR}/${etapa}"-*.sh 2>/dev/null | head -1)

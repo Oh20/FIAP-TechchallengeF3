@@ -376,7 +376,40 @@ kubectl -n toggle-apps apply -f base/targeting-service/migration-job.yaml
 kubectl -n toggle-apps get jobs
 ```
 
-## 4.7 Verificar
+## 4.7 Registrar a chave de servico do evaluation-service
+
+> Automatizado em `scripts/05-chave-de-servico.sh`.
+
+O Terraform **gera** a `SERVICE_API_KEY` (segredo `evaluation-service-api-key`)
+e a Parte 4.3 a injeta no Secret do evaluation-service. Mas quem valida a chave
+e o auth-service, procurando o **SHA-256** dela na tabela `api_keys` — e essa
+linha nao existe ate alguem grava-la.
+
+Sem este passo, com absolutamente todo o resto no ar:
+
+```
+evaluation-service -> flag-service   (Authorization: Bearer <SERVICE_API_KEY>)
+flag-service       -> auth /validate -> hash nao existe                 -> 401
+evaluation-service -> /evaluate                                         -> 502
+```
+
+Depende da 4.6: a tabela `api_keys` e criada la. O Job usa
+`ON CONFLICT (key_hash)`, entao rodar de novo nao duplica nem falha.
+
+```bash
+CHAVE=$(az keyvault secret show --vault-name <kv-app>     --name evaluation-service-api-key --query value -o tsv)
+
+kubectl -n toggle-apps create secret generic auth-service-key-seed     --from-literal=KEY_HASH="$(printf '%s' "$CHAVE" | sha256sum | cut -d' ' -f1)"     --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n toggle-apps apply -f base/auth-service/service-key-job.yaml
+kubectl -n toggle-apps wait --for=condition=complete job/auth-seed-service-key --timeout=180s
+```
+
+`printf '%s'` e nao `echo`: um `
+` a mais muda o hash inteiro, e o 401 volta
+sem nenhuma pista do motivo.
+
+## 4.8 Verificar
 
 ```bash
 kubectl -n toggle-apps get pods
@@ -469,7 +502,8 @@ Vivem em `scripts/` e são independentes do Jenkins — rodam na máquina local 
 | `02-k8s-secrets.sh` | 4.3 | container `azure-cli` |
 | `03-argocd.sh` | 4.4 e 4.5 | container `azure-cli` |
 | `04-migrations.sh` | 4.6 | container `azure-cli` |
-| `bootstrap.sh` | roda os quatro na ordem | máquina local |
+| `05-chave-de-servico.sh` | 4.7 | container `azure-cli` |
+| `bootstrap.sh` | roda os cinco na ordem | máquina local |
 | `_comum.sh` | funções comuns (sourced) | — |
 
 ```bash

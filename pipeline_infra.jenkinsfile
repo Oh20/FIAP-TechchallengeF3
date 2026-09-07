@@ -385,6 +385,28 @@ pipeline {
         }
 
         // =====================================================================
+        // 10.1 Chave de servico do evaluation-service
+        // =====================================================================
+        // O Terraform GERA a chave e o 02 a injeta no Secret, mas quem valida
+        // e o auth-service, procurando o SHA-256 dela na tabela api_keys - e
+        // nada gravava essa linha. Sem esta etapa o /evaluate responde 502 para
+        // toda flag, com todo o resto no ar.
+        //
+        // Depende do 04: a tabela api_keys e criada la.
+        stage('10.1 Chave de servico') {
+            when {
+                allOf {
+                    expression { params.ACAO == 'apply' }
+                    expression { params.BOOTSTRAP }
+                    expression { params.RODAR_MIGRATIONS }
+                }
+            }
+            steps {
+                script { azure("\"\$WORKSPACE/src/terraform/scripts/05-chave-de-servico.sh\"") }
+            }
+        }
+
+        // =====================================================================
         // 11. Verificação
         // =====================================================================
         stage('11. Verificação') {
