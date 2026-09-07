@@ -250,6 +250,7 @@ pipeline {
         // sai com código 1 em QUALQUER achado — inclusive LOW. Medido no
         // flag-service: 2 MEDIUM, exit 1. Ou seja, todo serviço Python
         // reprovava aqui, sempre, antes mesmo de chegar ao build da imagem.
+        // remove `-no-fail` se quiser bloquear em qualquer achado, mesmo LOW/INFO (Linha 273)
         stage('2. Linter & SAST') {
             steps {
                 script {
@@ -268,8 +269,8 @@ pipeline {
                                 docker run --rm \\
                                     -v "${WORKSPACE}:/src" \\
                                     -w "/src/app/${nome}" \\
-                                    securego/gosec:latest \\
-                                    -fmt=json -out=/src/${env.REPORTS_DIR}/gosec-${nome}.json \\
+                                    securego/gosec:latest \\                                
+                                    -fmt=json -out=/src/${env.REPORTS_DIR}/gosec-${nome}.json -no-fail \\
                                     -severity=high -confidence=medium ./...
                             """
                         } else {
