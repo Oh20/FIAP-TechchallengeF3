@@ -269,7 +269,7 @@ pipeline {
                                 docker run --rm \\
                                     -v "${WORKSPACE}:/src" \\
                                     -w "/src/app/${nome}" \\
-                                    securego/gosec:latest \\                                
+                                    securego/gosec:latest \\
                                     -fmt=json -out=/src/${env.REPORTS_DIR}/gosec-${nome}.json -no-fail \\
                                     -severity=high -confidence=medium ./...
                             """
