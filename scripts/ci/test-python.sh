@@ -40,14 +40,20 @@ echo "=== [$SERVICO] Instalando dependências ==="
 pip install --quiet --no-cache-dir -r requirements.txt -r requirements-dev.txt
 
 echo "=== [$SERVICO] Executando testes ==="
+# O status vai para um arquivo em vez de $?: depois de um pipeline, $? e o
+# status do ULTIMO comando (o tee), que e sempre 0. Capturar $? aqui fazia
+# suite quebrada terminar com exit 0 e o estagio do Jenkins passar verde.
+# `set -o pipefail` nao resolve: /bin/sh nas imagens Debian e o dash.
 set +e
-python -m pytest \
-    --junitxml="$REPORTS/junit-$SERVICO.xml" \
-    --cov=app \
-    --cov-report="xml:$REPORTS/coverage-$SERVICO.xml" \
-    --cov-report=term \
-    2>&1 | tee "$REPORTS/test-$SERVICO.log"
-STATUS=$?
+{
+    python -m pytest \
+        --junitxml="$REPORTS/junit-$SERVICO.xml" \
+        --cov=app \
+        --cov-report="xml:$REPORTS/coverage-$SERVICO.xml" \
+        --cov-report=term 2>&1
+    echo $? > /tmp/status
+} | tee "$REPORTS/test-$SERVICO.log"
+STATUS=$(cat /tmp/status 2>/dev/null || echo 1)
 set -e
 
 # Linha "TOTAL   170   10   94%" do relatório de cobertura em texto.

@@ -52,9 +52,16 @@ if [ "$GO_RACE" = "1" ]; then
 fi
 
 echo "=== [$SERVICO] Executando testes ${FLAG_RACE} ==="
+# O status vai para um arquivo em vez de $?: depois de um pipeline, $? e o
+# status do ULTIMO comando (o tee), que e sempre 0. Capturar $? aqui fazia
+# suite quebrada terminar com exit 0 e o estagio do Jenkins passar verde.
+# `set -o pipefail` nao resolve: /bin/sh nas imagens Debian e o dash.
 set +e
-go test -v $FLAG_RACE -covermode=atomic -coverprofile=/tmp/coverage.out ./... 2>&1 | tee /tmp/test.log
-STATUS=$?
+{
+    go test -v $FLAG_RACE -covermode=atomic -coverprofile=/tmp/coverage.out ./... 2>&1
+    echo $? > /tmp/status
+} | tee /tmp/test.log
+STATUS=$(cat /tmp/status 2>/dev/null || echo 1)
 set -e
 
 cp /tmp/test.log "$REPORTS/test-$SERVICO.log"

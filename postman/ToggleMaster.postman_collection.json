@@ -5,8 +5,8 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://135.222.245.10", "type": "string" },
-    { "key": "masterKey", "value": "Trocarsenha@@2026", "type": "string" },
+    { "key": "baseUrl", "value": "http://SUBSTITUA-PELO-IP-DO-APP-GATEWAY", "type": "string" },
+    { "key": "masterKey", "value": "", "type": "string" },
     { "key": "apiKey", "value": "", "type": "string" },
     { "key": "flagPool", "value": "[\"dashboard-50\",\"beta-25\",\"promo-75\",\"fullrollout-100\"]", "type": "string" },
     { "key": "flagName", "value": "dashboard-50", "type": "string" },
