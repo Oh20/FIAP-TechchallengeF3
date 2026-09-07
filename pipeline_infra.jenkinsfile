@@ -1,0 +1,446 @@
+// =============================================================================
+// ToggleMaster — Pipeline de Infraestrutura (Tech Challenge Fase 3)
+// =============================================================================
+//
+// Provisiona o ambiente Azure com Terraform e deixa o cluster pronto para uso:
+// Argo CD instalado, repositório GitOps registrado, App-of-Apps aplicado,
+// Secrets criados a partir do Key Vault e migrations executadas.
+//
+// É a Parte 2 e a Parte 4 do IaC/README.md automatizadas. O README continua
+// sendo a referência do que cada etapa faz e do porquê.
+//
+// Requisitos do agente Jenkins: apenas Docker e Git. Terraform, az CLI e
+// kubectl rodam em container — nada é instalado na VM do agente.
+//
+// Plugins: Pipeline, Credentials Binding, Timestamper, Workspace Cleanup.
+//
+// Credenciais esperadas no Jenkins:
+//   azure-service-principal  Username/Password  — App Registration: appId / client secret
+//   azure-devops-pat         Username/Password  — PAT do Azure DevOps (clones e push)
+//   arm-tenant-id            Secret text        — Directory (tenant) ID
+//   arm-subscription-id      Secret text        — Subscription ID
+//
+// As duas primeiras já são usadas pelo pipeline da aplicação. As duas últimas
+// não são segredo de verdade (são identificadores), mas ficam como credencial
+// para não entrarem no Git e serem configuradas uma única vez.
+//
+// Por que o Argo CD NÃO está no Terraform: o provider helm/kubernetes teria de
+// ser configurado a partir de atributos do próprio AKS. Isso quebra `plan` e
+// `destroy` quando o cluster não existe — e este ambiente é destruído entre as
+// sessões de trabalho por causa do custo (ver README, seção "Custo").
+// =============================================================================
+
+// --- Helpers ----------------------------------------------------------------
+
+// Roda um comando dentro de um container, com o workspace montado no mesmo
+// caminho de dentro e de fora — assim os caminhos absolutos dos scripts valem
+// nos dois lados.
+//
+// `-u $(id -u):$(id -g)`: os arquivos criados (.terraform, kubeconfig, planos,
+// cache de providers) ficam do dono do agente. Sem isso saem root e o build
+// seguinte não consegue sobrescrevê-los. Se alguma imagem reclamar de UID sem
+// entrada em /etc/passwd, remova o `-u` desta linha — o preço é ter de dar
+// chown no workspace depois.
+//
+// As credenciais são repassadas por `-e NOME` (sem valor): quem resolve é o
+// daemon do Docker a partir do ambiente do processo, então o segredo nunca
+// aparece na linha de comando — que é visível em `ps` no host.
+def emContainer(String imagem, String comando) {
+    def repasse = [
+        'WORKSPACE', 'HOME', 'KUBECONFIG', 'AMBIENTE_ENV', 'BIN_DIR', 'TF_DIR',
+        'TF_PLUGIN_CACHE_DIR',
+        'ARM_TENANT_ID', 'ARM_SUBSCRIPTION_ID',
+        'AZURE_SP_USR', 'AZURE_SP_PSW', 'AZ_DEVOPS_USR', 'AZ_DEVOPS_PSW',
+        'GITOPS_DIR', 'APP_DIR', 'ARGOCD_VERSION', 'POOL_CICD',
+        'NAMESPACE_APPS', 'NAMESPACE_ARGOCD',
+    ].collect { "-e ${it}" }.join(' ')
+
+    // O mapeamento credencial -> variável que os scripts esperam acontece
+    // DENTRO do container, pelo mesmo motivo acima.
+    //
+    // `export ...;` e não atribuição prefixada (`VAR=x comando`): os scripts
+    // rodam como processo filho, e uma atribuição prefixada a um builtin como
+    // `cd` não se propaga.
+    def prefixo = 'set -eu; export ARM_CLIENT_ID="$AZURE_SP_USR" ARM_CLIENT_SECRET="$AZURE_SP_PSW" ' +
+                  'GITOPS_USER="$AZ_DEVOPS_USR" GITOPS_PAT="$AZ_DEVOPS_PSW"; '
+
+    sh """
+        docker run --rm \\
+            -u \$(id -u):\$(id -g) \\
+            -v "${env.WORKSPACE}:${env.WORKSPACE}" \\
+            -w "${env.WORKSPACE}" \\
+            ${repasse} \\
+            --entrypoint /bin/sh \\
+            ${imagem} -c '${prefixo}${comando}'
+    """
+}
+
+def terraform(String comando) {
+    emContainer(env.TF_IMAGE, "cd \"\$TF_DIR\" && terraform ${comando}")
+}
+
+def azure(String comando) {
+    emContainer(env.AZ_IMAGE, comando)
+}
+
+// =============================================================================
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        // Apply leva 15-25 min (AKS e Application Gateway), o bootstrap mais uns
+        // 15, e a aprovação manual pode comer 30. 120 cobre o pior caso.
+        timeout(time: 120, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        // O apply e o destroy mexem no mesmo state remoto. Concorrência aqui
+        // não dá conflito silencioso: dá lock do backend e build travado.
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(
+            name: 'ACAO',
+            choices: ['plan', 'apply', 'destroy'],
+            description: 'plan só mostra o que mudaria. apply provisiona e roda o bootstrap. destroy derruba o ambiente inteiro.'
+        )
+        booleanParam(
+            name: 'BOOTSTRAP',
+            defaultValue: true,
+            description: 'Depois do apply, deixa o cluster pronto: Argo CD, Secrets do Key Vault, App-of-Apps e migrations. Desligue para provisionar só a infraestrutura do Azure.'
+        )
+        booleanParam(
+            name: 'ATUALIZAR_GITOPS',
+            defaultValue: true,
+            description: 'Aponta os manifestos do repositório GitOps para o ACR e o Cosmos deste ambiente e faz push. O Argo CD lê do Git: com isto desligado num ambiente novo, os pods sobem em ImagePullBackOff apontando para o registry anterior.'
+        )
+        booleanParam(
+            name: 'RODAR_MIGRATIONS',
+            defaultValue: true,
+            description: 'Roda os Jobs que aplicam o db/init.sql nos três PostgreSQL. Os scripts são idempotentes (CREATE TABLE IF NOT EXISTS).'
+        )
+        booleanParam(
+            name: 'AUTO_APROVAR',
+            defaultValue: false,
+            description: 'Aplica sem parar para revisão do plano. Deixe desligado em uso normal.'
+        )
+        string(
+            name: 'ARGOCD_VERSION',
+            defaultValue: 'stable',
+            description: 'Tag do manifesto de instalação do Argo CD. Fixe uma versão (ex.: v2.13.2) para builds reprodutíveis — "stable" muda sem aviso.'
+        )
+        booleanParam(
+            name: 'POOL_CICD',
+            defaultValue: false,
+            description: 'Marque se cicd_node_pool.enabled = true no toggle.tfvars. Adiciona nodeSelector + tolerância ao Argo CD para ele cair no cicdpool. Com o pool desligado (default), marcar isto deixa o Argo CD Pending para sempre.'
+        )
+        string(name: 'TF_BRANCH',     defaultValue: 'main', description: 'Branch do repositório de IaC (de onde vêm o Terraform e os scripts de bootstrap).')
+        string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'Branch do repositório de manifestos (TCF3 - K8S).')
+        string(name: 'APP_BRANCH',    defaultValue: 'main', description: 'Branch do repositório da aplicação (só para ler os db/init.sql das migrations).')
+    }
+
+    environment {
+        // --- Imagens das ferramentas ---
+        // Terraform fixado: mudança de minor altera o formato do state.
+        // azure-cli em latest de propósito — a MCR remove tags antigas com o
+        // tempo, e um build que quebra porque a tag sumiu é pior que um az novo.
+        TF_IMAGE = 'hashicorp/terraform:1.9.8'
+        AZ_IMAGE = 'mcr.microsoft.com/azure-cli:latest'
+
+        // --- Diretórios ---
+        SRC_DIR    = "${WORKSPACE}/src"
+        TF_REPO    = "${WORKSPACE}/src/terraform"
+        TF_DIR     = "${WORKSPACE}/src/terraform/env"
+        SCRIPTS    = "${WORKSPACE}/src/terraform/scripts"
+        GITOPS_DIR = "${WORKSPACE}/src/gitops"
+        APP_DIR    = "${WORKSPACE}/src/app"
+
+        // Estado compartilhado entre as etapas. Cada `docker run --rm` é um
+        // container novo: o que precisa sobreviver mora no workspace.
+        HOME                = "${WORKSPACE}/.home"
+        KUBECONFIG          = "${WORKSPACE}/.kube/config"
+        AMBIENTE_ENV        = "${WORKSPACE}/ambiente.env"
+        BIN_DIR             = "${WORKSPACE}/bin"
+        TF_PLUGIN_CACHE_DIR = "${WORKSPACE}/.terraform-plugin-cache"
+
+        // --- Repositórios (sem o https://, o esquema é montado junto do PAT) ---
+        REPO_TF     = 'dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/terraform%20-%20F3'
+        REPO_GITOPS = 'dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/TCF3%20-%20K8S'
+        REPO_APP    = 'dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/FIAP%20-%20ToggleMaster%20F3'
+
+        // --- Credenciais ---
+        // Username/Password expõem <NOME>_USR e <NOME>_PSW.
+        AZURE_SP            = credentials('azure-service-principal')
+        AZ_DEVOPS           = credentials('azure-devops-pat')
+        ARM_TENANT_ID       = credentials('arm-tenant-id')
+        ARM_SUBSCRIPTION_ID = credentials('arm-subscription-id')
+
+        // --- Repassado aos scripts ---
+        ARGOCD_VERSION   = "${params.ARGOCD_VERSION}"
+        POOL_CICD        = "${params.POOL_CICD}"
+        GITOPS_BRANCH    = "${params.GITOPS_BRANCH}"
+        NAMESPACE_APPS   = 'toggle-apps'
+        NAMESPACE_ARGOCD = 'argocd'
+    }
+
+    stages {
+
+        // =====================================================================
+        // 0. Preparação e checkout
+        // =====================================================================
+        // Os três repositórios são clonados explicitamente, em vez de depender
+        // do `checkout scm`: assim o job funciona igual configurado como
+        // "Pipeline script from SCM" ou colado inline.
+        stage('0. Preparar & Checkout') {
+            steps {
+                sh '''
+                    set -eu
+                    rm -rf "${SRC_DIR}" "${WORKSPACE}/.kube"
+                    mkdir -p "${SRC_DIR}" "${HOME}" "${BIN_DIR}" \
+                             "${WORKSPACE}/.kube" "${TF_PLUGIN_CACHE_DIR}"
+                '''
+
+                // Aspas simples de propósito: quem expande é o shell, não o
+                // Groovy. Interpolar segredo em GString vaza o valor no log e
+                // no `Replay` do Jenkins.
+                sh '''
+                    set -eu
+                    echo "=== Checkout: IaC (Terraform) ==="
+                    git clone --quiet --branch "${TF_BRANCH}" \
+                        "https://${AZ_DEVOPS_USR}:${AZ_DEVOPS_PSW}@${REPO_TF}" "${TF_REPO}"
+
+                    echo "=== Checkout: GitOps (manifestos K8s) ==="
+                    git clone --quiet --branch "${GITOPS_BRANCH}" \
+                        "https://${AZ_DEVOPS_USR}:${AZ_DEVOPS_PSW}@${REPO_GITOPS}" "${GITOPS_DIR}"
+
+                    echo "=== Checkout: aplicação (db/init.sql das migrations) ==="
+                    git clone --quiet --branch "${APP_BRANCH}" \
+                        "https://${AZ_DEVOPS_USR}:${AZ_DEVOPS_PSW}@${REPO_APP}" "${APP_DIR}"
+
+                    chmod +x "${SCRIPTS}"/*.sh
+                '''
+            }
+        }
+
+        // =====================================================================
+        // 1. Terraform
+        // =====================================================================
+        stage('1. Terraform Init') {
+            steps {
+                script { terraform('init -input=false -no-color') }
+            }
+        }
+
+        stage('2. Terraform Validate') {
+            steps {
+                script {
+                    // fmt -check falha se alguém commitou HCL desformatado.
+                    // Roda na raiz do repo para cobrir bootstrap/ e modules/.
+                    emContainer(env.TF_IMAGE, "cd \"\$WORKSPACE/src/terraform\" && terraform fmt -recursive -check -diff -no-color")
+                    terraform('validate -no-color')
+                }
+            }
+        }
+
+        stage('3. Terraform Plan') {
+            steps {
+                script {
+                    def destroy = params.ACAO == 'destroy' ? '-destroy ' : ''
+                    terraform("plan -input=false -no-color ${destroy}-var-file=toggle.tfvars -out=tfplan")
+                }
+            }
+        }
+
+        // =====================================================================
+        // 4. Aprovação
+        // =====================================================================
+        // O plano acima já está no log. Aqui só se decide se ele vai adiante.
+        stage('4. Aprovação') {
+            when {
+                allOf {
+                    expression { params.ACAO != 'plan' }
+                    expression { !params.AUTO_APROVAR }
+                }
+            }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: "Revise o plano acima. Executar '${params.ACAO}' no ambiente?",
+                          ok: params.ACAO.toUpperCase()
+                }
+            }
+        }
+
+        // =====================================================================
+        // 5. Apply / Destroy
+        // =====================================================================
+        // `apply tfplan` aplica exatamente o plano aprovado — não recalcula.
+        // Por isso o -var-file não se repete aqui: ele já está dentro do plano.
+        stage('5. Apply') {
+            when { expression { params.ACAO == 'apply' } }
+            steps {
+                script { terraform('apply -input=false -no-color tfplan') }
+            }
+        }
+
+        stage('5. Destroy') {
+            when { expression { params.ACAO == 'destroy' } }
+            steps {
+                script { terraform('apply -input=false -no-color tfplan') }
+            }
+        }
+
+        // =====================================================================
+        // 6. Coordenadas do ambiente
+        // =====================================================================
+        // Só o container do Terraform tem acesso ao state. Ele escreve o
+        // ambiente.env (nomes de recurso, nada sensível) que as etapas
+        // seguintes leem — assim o container do az CLI não precisa de terraform.
+        stage('6. Coletar outputs') {
+            when {
+                allOf {
+                    expression { params.ACAO == 'apply' }
+                    expression { params.BOOTSTRAP }
+                }
+            }
+            steps {
+                script {
+                    emContainer(env.TF_IMAGE,
+                        ". \"\$WORKSPACE/src/terraform/scripts/_comum.sh\" && gerar_ambiente_env \"\$AMBIENTE_ENV\"")
+                }
+                sh 'echo "=== ambiente.env ==="; cat "${AMBIENTE_ENV}"'
+            }
+        }
+
+        // =====================================================================
+        // 7. GitOps: apontar os manifestos para este ambiente
+        // =====================================================================
+        // Roda no agente, não em container: só precisa de git e sed, e o remote
+        // do clone já carrega o PAT.
+        //
+        // Vem ANTES do Argo CD de propósito: o Argo sincroniza a partir do Git,
+        // então o commit precisa estar publicado quando ele subir.
+        stage('7. GitOps: apontar ambiente') {
+            when {
+                allOf {
+                    expression { params.ACAO == 'apply' }
+                    expression { params.BOOTSTRAP }
+                    expression { params.ATUALIZAR_GITOPS }
+                }
+            }
+            steps {
+                sh '''
+                    set -eu
+                    PUBLICAR=true "${SCRIPTS}/01-gitops-apontar-ambiente.sh"
+                '''
+            }
+        }
+
+        // =====================================================================
+        // 8. Secrets do Kubernetes
+        // =====================================================================
+        // Antes do Argo CD: assim que o App-of-Apps sincronizar, os Deployments
+        // já encontram os Secrets e não passam por CreateContainerConfigError.
+        stage('8. Secrets do Key Vault') {
+            when {
+                allOf {
+                    expression { params.ACAO == 'apply' }
+                    expression { params.BOOTSTRAP }
+                }
+            }
+            steps {
+                script { azure("\"\$WORKSPACE/src/terraform/scripts/02-k8s-secrets.sh\"") }
+            }
+        }
+
+        // =====================================================================
+        // 9. Argo CD
+        // =====================================================================
+        stage('9. Argo CD') {
+            when {
+                allOf {
+                    expression { params.ACAO == 'apply' }
+                    expression { params.BOOTSTRAP }
+                }
+            }
+            steps {
+                script { azure("\"\$WORKSPACE/src/terraform/scripts/03-argocd.sh\"") }
+            }
+        }
+
+        // =====================================================================
+        // 10. Migrations
+        // =====================================================================
+        stage('10. Migrations') {
+            when {
+                allOf {
+                    expression { params.ACAO == 'apply' }
+                    expression { params.BOOTSTRAP }
+                    expression { params.RODAR_MIGRATIONS }
+                }
+            }
+            steps {
+                script { azure("\"\$WORKSPACE/src/terraform/scripts/04-migrations.sh\"") }
+            }
+        }
+
+        // =====================================================================
+        // 11. Verificação
+        // =====================================================================
+        stage('11. Verificação') {
+            when {
+                allOf {
+                    expression { params.ACAO == 'apply' }
+                    expression { params.BOOTSTRAP }
+                }
+            }
+            steps {
+                script {
+                    // Passa pelo _comum.sh para ter kubectl no PATH e o
+                    // kubeconfig carregado — o container é novo a cada etapa.
+                    azure('. "$WORKSPACE/src/terraform/scripts/_comum.sh" && ' +
+                          'carregar_ambiente && preparar_kubeconfig && ' +
+                          'kubectl get nodes && ' +
+                          'kubectl -n "$NAMESPACE_ARGOCD" get applications && ' +
+                          'kubectl -n "$NAMESPACE_APPS" get pods && ' +
+                          'kubectl -n "$NAMESPACE_APPS" get ingress')
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // O kubeconfig traz um certificado de cliente do cluster: não pode
+            // ficar no workspace entre builds.
+            //
+            // O resto do workspace FICA de propósito — o cache de providers do
+            // Terraform vale ~250 MB de download por build. `cleanWs()` aqui
+            // custaria isso toda vez.
+            sh 'rm -rf "${WORKSPACE}/.kube" || true'
+        }
+        success {
+            script {
+                if (params.ACAO == 'apply' && params.BOOTSTRAP) {
+                    echo '''
+Ambiente pronto.
+
+  Senha inicial do Argo CD (gravada no Key Vault [Infra CI/CD]):
+    az keyvault secret show --vault-name <key_vault_infra_name> --name argocd-admin-password --query value -o tsv
+
+  Acesso ao Argo CD (Service ClusterIP, sem endereço público):
+    kubectl -n argocd port-forward svc/argocd-server 8080:443
+
+  O ACR sobe VAZIO. Publique as imagens (README, Parte 3) ou rode o
+  pipeline da aplicação — até lá os pods ficam em ImagePullBackOff.
+'''
+                } else if (params.ACAO == 'destroy') {
+                    echo 'Ambiente destruído. O Storage Account do tfstate (bootstrap/) continua de pé.'
+                }
+            }
+        }
+        failure {
+            echo 'Pipeline falhou. Se quebrou no meio de um apply, parte dos recursos já existe: rode de novo com ACAO=apply — o Terraform é idempotente e retoma de onde parou.'
+        }
+    }
+}

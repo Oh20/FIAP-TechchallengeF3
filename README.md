@@ -10,10 +10,19 @@ Este README é um runbook: siga na ordem e o ambiente sobe do zero.
 
 ```
 IaC/
-├── bootstrap/   Resource Group + Storage Account do tfstate (backend local)
-├── modules/     Módulo de plataforma: todos os recursos do ambiente
-└── env/         Root module: instancia o módulo e guarda o state remoto
+├── bootstrap/                     Resource Group + Storage Account do tfstate (backend local)
+├── modules/                       Módulo de plataforma: todos os recursos do ambiente
+├── env/                           Root module: instancia o módulo e guarda o state remoto
+├── scripts/                       Bootstrap do cluster (Argo CD, Secrets, migrations)
+└── pipeline_infra.jenkinsfile     Terraform + bootstrap, ponta a ponta, no Jenkins
 ```
+
+> **Atalho:** as Partes 2 e 4 deste runbook estão automatizadas em
+> `pipeline_infra.jenkinsfile`. Um build com `ACAO=apply` provisiona o ambiente
+> **e** entrega o cluster com Argo CD instalado, Secrets criados e migrations
+> rodadas. Ver *Automação — Partes 2 e 4 pelo Jenkins*, no fim deste arquivo.
+> As instruções manuais abaixo continuam valendo e são a referência do que cada
+> etapa faz.
 
 `modules/` é um módulo reutilizável — não tem `backend` nem bloco `provider`.
 Para um segundo ambiente, basta uma pasta nova ao lado de `env/` apontando para
@@ -214,6 +223,8 @@ az acr repository list --name "$ACR" -o table    # confirme os 5
 
 ## 4.1 Trocar o ACR nos manifests
 
+> Automatizado em `scripts/01-gitops-apontar-ambiente.sh`, junto com a 4.2.
+
 O ACR antigo (`fiapdevopsadegj.azurecr.io`) aparece em **dois lugares** — o
 kustomize casa a imagem pelo campo `name`, então trocar só o deployment não
 basta:
@@ -244,6 +255,8 @@ sed -i "s|https://tohhlemaster-analytics.documents.azure.com:443/|$COSMOS|" \
 `SERVICE_BUS_QUEUE_NAME` já bate com o default (`togglemasterqueue`) — não mexa.
 
 ## 4.3 Criar os Secrets
+
+> Automatizado em `scripts/02-k8s-secrets.sh`.
 
 Os `secret.example.yaml` são modelos e ficam fora do kustomize de propósito —
 segredo não vai para o Git. Os valores reais estão no Key Vault [APP CI]:
@@ -293,6 +306,9 @@ Alternativa sem `kubectl create secret`: o cluster já tem o addon
 
 ## 4.4 Instalar o Argo CD
 
+> Automatizado em `scripts/03-argocd.sh`. O passo a passo abaixo é o que o
+> script faz.
+
 O Terraform cria o cluster, não instala o Argo.
 
 ```bash
@@ -329,6 +345,10 @@ nodeSelector:
 
 ## 4.5 Registrar o repositório e aplicar o root app
 
+> Automatizado em `scripts/03-argocd.sh`. O script registra o repositório de
+> forma declarativa (um Secret com a label `argocd.argoproj.io/secret-type`),
+> sem precisar do CLI `argocd`.
+
 ```bash
 # commite e dê push nas mudanças das partes 4.1 e 4.2 ANTES disto:
 # o Argo lê do Git, não do disco
@@ -341,6 +361,8 @@ kubectl -n argocd apply -f argocd/root-app.yaml
 ```
 
 ## 4.6 Rodar as migrations
+
+> Automatizado em `scripts/04-migrations.sh`.
 
 Os migration jobs ficam fora do kustomize de propósito — migração é operação
 imperativa e ordenada, não estado desejado. Eles usam `psql` contra o
@@ -362,6 +384,146 @@ kubectl -n toggle-apps get ingress togglemaster-ingress    # IP público do App 
 ```
 
 A coleção Postman está em `../app/postman/ToggleMaster.postman_collection.json`.
+
+---
+
+# Automação — Partes 2 e 4 pelo Jenkins
+
+`pipeline_infra.jenkinsfile` roda o Terraform e, na sequência, deixa o cluster
+utilizável: Argo CD instalado, repositório GitOps registrado, App-of-Apps
+aplicado, Secrets criados a partir do Key Vault e migrations executadas.
+
+Requisitos do agente: **apenas Docker e Git**. Terraform, `az` CLI e `kubectl`
+rodam em container — nada é instalado na VM do agente.
+
+## Por que o Argo CD não está no Terraform
+
+O provider `helm`/`kubernetes` teria de ser configurado a partir de atributos do
+próprio AKS (`host`, `client_certificate`, ...). Provider configurado por atributo
+de recurso é a causa clássica de falha em `terraform destroy` e em `plan` com o
+cluster inexistente — e este ambiente é destruído entre as sessões de trabalho
+por causa do custo (ver *Custo*). Instalar o Argo CD depois do apply, com
+`kubectl`, mantém os dois ciclos de vida independentes.
+
+## Credenciais no Jenkins
+
+| ID | Tipo | Conteúdo |
+| --- | --- | --- |
+| `azure-service-principal` | Username/Password | `appId` / client secret do App Registration |
+| `azure-devops-pat` | Username/Password | usuário / PAT do Azure DevOps |
+| `arm-tenant-id` | Secret text | Directory (tenant) ID |
+| `arm-subscription-id` | Secret text | Subscription ID |
+
+As duas primeiras já são usadas pelo pipeline da aplicação. As duas últimas não
+são segredo de verdade (são identificadores), mas ficam como credencial para não
+entrarem no Git e serem configuradas uma vez só.
+
+Os valores nunca aparecem na linha de comando do `docker run`: são repassados por
+`-e NOME` (sem valor) e mapeados dentro do container. `ps` no host não os mostra.
+
+## Parâmetros
+
+| Parâmetro | Default | O que faz |
+| --- | --- | --- |
+| `ACAO` | `plan` | `plan` só mostra; `apply` provisiona e roda o bootstrap; `destroy` derruba tudo |
+| `BOOTSTRAP` | `true` | Depois do apply: Argo CD, Secrets, App-of-Apps e migrations |
+| `ATUALIZAR_GITOPS` | `true` | Aponta os manifestos para o ACR/Cosmos deste ambiente e dá push |
+| `RODAR_MIGRATIONS` | `true` | Roda os Jobs com o `db/init.sql` dos três PostgreSQL |
+| `AUTO_APROVAR` | `false` | Pula a revisão do plano |
+| `ARGOCD_VERSION` | `stable` | Tag do manifesto do Argo CD. Fixe uma versão para builds reprodutíveis |
+| `POOL_CICD` | `false` | Marque **só** se `cicd_node_pool.enabled = true` no `toggle.tfvars` |
+| `TF_BRANCH` / `GITOPS_BRANCH` / `APP_BRANCH` | `main` | Branch de cada repositório |
+
+O pipeline clona os **três** repositórios: IaC (Terraform + scripts), GitOps
+(manifestos) e aplicação (só para ler os `db/init.sql` das migrations).
+
+## Ordem das etapas, e por que ela é essa
+
+```
+0  checkout dos 3 repos
+1  terraform init
+2  terraform fmt -check + validate
+3  terraform plan            (com -destroy quando ACAO=destroy)
+4  aprovacao manual          (input; pulada com AUTO_APROVAR)
+5  terraform apply tfplan    aplica exatamente o plano aprovado
+6  terraform output          -> ambiente.env
+7  GitOps: apontar ambiente  ANTES do Argo CD: ele sincroniza a partir do Git
+8  Secrets do Key Vault      ANTES do Argo CD: senao os pods sobem sem Secret
+9  Argo CD                   install + repo + root-app
+10 migrations                DEPOIS da 8: o Job le DATABASE_URL do Secret
+11 verificacao
+```
+
+`ambiente.env` carrega só nomes de recurso — nenhum segredo. Ele existe porque
+apenas o container do Terraform tem acesso ao state; as etapas seguintes rodam no
+container do `az` CLI, que não tem `terraform`.
+
+## Os scripts
+
+Vivem em `scripts/` e são independentes do Jenkins — rodam na máquina local com
+`az`, `kubectl`, `git` e `terraform` no PATH. Todos são **idempotentes**.
+
+| Script | README | Onde roda |
+| --- | --- | --- |
+| `01-gitops-apontar-ambiente.sh` | 4.1 e 4.2 | agente (só git e sed) |
+| `02-k8s-secrets.sh` | 4.3 | container `azure-cli` |
+| `03-argocd.sh` | 4.4 e 4.5 | container `azure-cli` |
+| `04-migrations.sh` | 4.6 | container `azure-cli` |
+| `bootstrap.sh` | roda os quatro na ordem | máquina local |
+| `_comum.sh` | funções comuns (sourced) | — |
+
+```bash
+export ARM_TENANT_ID=... ARM_SUBSCRIPTION_ID=...
+export ARM_CLIENT_ID=... ARM_CLIENT_SECRET=...
+
+cd IaC
+GITOPS_DIR=../infra APP_DIR=../app ./scripts/bootstrap.sh
+```
+
+Sem `ambiente.env` no diretório, `_comum.sh` gera um chamando
+`terraform output` em `env/`.
+
+## Acesso ao Argo CD
+
+O `argocd-server` fica **ClusterIP**: nada do Argo CD é exposto na internet.
+
+```bash
+kubectl -n argocd port-forward svc/argocd-server 8080:443
+# https://localhost:8080   usuario: admin
+```
+
+A senha inicial não vai para o log do build — o script grava no
+Key Vault [Infra CI/CD], como `argocd-admin-password`:
+
+```bash
+az keyvault secret show   --vault-name $(terraform -chdir=env output -raw key_vault_infra_name)   --name argocd-admin-password --query value -o tsv
+```
+
+O Terraform popula esse cofre com `for_each`, que não remove segredos que ele não
+gerencia — gravar ali não vira drift no próximo apply.
+
+Para publicar o Argo CD depois, o Application Gateway do AGIC já está de pé:
+basta um Ingress com a classe `azure/application-gateway` e o `argocd-server` em
+modo `--insecure`.
+
+## Detalhes que custaram a descobrir
+
+- **`kubectl apply --server-side --force-conflicts`** no `install.yaml`. O apply
+  client-side falha na segunda execução com
+  `metadata.annotations: Too long: must have at most 262144 bytes` — as CRDs do
+  Argo CD estouram o limite da anotação `last-applied-configuration`.
+- **O `argocd-application-controller` é StatefulSet**, não Deployment. Um
+  `wait --for=condition=available deployment --all` passa sem esperar por ele.
+- **A URL do repositório no Secret tem que ser idêntica ao `repoURL`** das
+  Applications — com o prefixo `Oh20Tony@` e os espaços em `%20`. Diferente, o
+  Argo não casa a credencial e a Application fica em
+  *repository not accessible*. O script extrai a URL do próprio `root-app.yaml`
+  em vez de repeti-la.
+- **Job é imutável**: reaplicar por cima falha com `field is immutable`. O
+  script apaga o Job antes de recriar.
+- **Os ConfigMaps `<servico>-initsql` não existem em nenhum repositório.** São
+  gerados a partir do `db/init.sql` do repositório da aplicação — por isso o
+  pipeline clona os três repos.
 
 ---
 

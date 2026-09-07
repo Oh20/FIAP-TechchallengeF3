@@ -30,3 +30,8 @@ override.tf.json
 # Planos salvos podem conter valores sensiveis em texto claro
 *.tfplan
 tfplan
+planfile
+
+# Coordenadas do ambiente geradas pelo pipeline (scripts/_comum.sh).
+# Ja coberto por *.env acima, listado aqui para ficar explicito.
+ambiente.env
