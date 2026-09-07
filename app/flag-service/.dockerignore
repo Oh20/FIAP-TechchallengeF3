@@ -1,0 +1,15 @@
+# Artefatos de teste e desenvolvimento não entram na imagem de produção.
+tests/
+pytest.ini
+requirements-dev.txt
+.pytest_cache/
+.coverage
+coverage.xml
+junit.xml
+htmlcov/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+README.md
