@@ -34,11 +34,11 @@ spec:
             - -c
             - |
               set -eu
-              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-                -v hash="$KEY_HASH" \
-                -c "INSERT INTO api_keys (name, key_hash, is_active)
-                    VALUES ('evaluation-service', :'hash', true)
-                    ON CONFLICT (key_hash) DO UPDATE SET is_active = true;"
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v hash="$KEY_HASH" <<'SQL'
+              INSERT INTO api_keys (name, key_hash, is_active)
+                  VALUES ('evaluation-service', :'hash', true)
+                  ON CONFLICT (key_hash) DO UPDATE SET is_active = true;
+              SQL
               echo "chave de servico do evaluation-service registrada."
           env:
             - name: DATABASE_URL
