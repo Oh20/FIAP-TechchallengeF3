@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: flag-service
-          image: fiapdevopsadegj.azurecr.io/flag-service:latest
+          image: acrtogglemasterprod6k07.azurecr.io/flag-service:latest
           imagePullPolicy: Always
           ports:
             - name: http

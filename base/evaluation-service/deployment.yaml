@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: evaluation-service
-          image: fiapdevopsadegj.azurecr.io/evaluation-service:latest
+          image: acrtogglemasterprod6k07.azurecr.io/evaluation-service:latest
           imagePullPolicy: Always
           ports:
             - name: http

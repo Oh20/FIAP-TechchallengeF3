@@ -8,6 +8,6 @@ metadata:
 data:
   PORT: "8005"
   SERVICE_BUS_QUEUE_NAME: "togglemasterqueue"
-  COSMOS_ENDPOINT: "https://tohhlemaster-analytics.documents.azure.com:443/"
+  COSMOS_ENDPOINT: "https://cosmos-togglemaster-prod-6k07.documents.azure.com:443/"
   COSMOS_DATABASE: "ToggleMaster"
   COSMOS_CONTAINER: "ToggleMasterAnalytics"
