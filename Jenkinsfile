@@ -130,7 +130,7 @@ pipeline {
         )
         string(
             name: 'ACR_NAME',
-            defaultValue: 'fiapdevopsadegj',
+            defaultValue: 'acrtogglemasterprod6k07',
             description: 'Nome do Azure Container Registry (só alfanumérico — o Azure não aceita hífen). Precisa bater com os manifestos do repositório de GitOps.'
         )
         booleanParam(
