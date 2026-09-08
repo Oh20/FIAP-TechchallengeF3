@@ -2,7 +2,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: toggle-apps
 resources:
-  - ../../../base/evaluation-service
+- ../../../base/evaluation-service
 images:
-  - name: acrtogglemasterprod6k07.azurecr.io/evaluation-service
-    newTag: latest
+- name: acrtogglemasterprod6k07.azurecr.io/evaluation-service
+  newName: acrtogglemasterprod6k07.azurecr.io/evaluation-service
+  newTag: 8-2d04edd
