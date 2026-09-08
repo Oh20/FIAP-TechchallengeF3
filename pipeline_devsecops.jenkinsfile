@@ -103,7 +103,7 @@ pipeline {
     parameters {
         string(
             name: 'ACR_NAME',
-            defaultValue: 'fiapdevopsadegj',
+            defaultValue: 'acrtogglemasterprod6k07',
             description: 'Nome do Azure Container Registry (só letras e números — o Azure não aceita hífen). Precisa bater com o `terraform output` e com os manifestos do repositório de GitOps.'
         )
         string(
