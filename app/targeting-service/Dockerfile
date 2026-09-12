@@ -10,7 +10,7 @@ WORKDIR /app
 
 # Caso alguma biblioteca futura precise de compiladores (como gcc), 
 # você pode instalar aqui. Para o requirements atual, mantemos limpo.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
