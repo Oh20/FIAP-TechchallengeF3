@@ -23,7 +23,7 @@ RUN go build -ldflags="-s -w" -o /app
 FROM debian:bookworm-slim AS final
 
 # Atualiza os certificados CA (necessário se o Go fizer chamadas HTTPS/APIs externas)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
