@@ -6,7 +6,7 @@ FROM python:3.13-slim AS builder
 WORKDIR /app
 
 # Entender melhor esse RUN
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -29,6 +29,7 @@ ENV PATH=/root/.local/bin:$PATH
 WORKDIR /app
 
 # Copia apenas as dependências instaladas do estágio anterior
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /root/.local /root/.local
 
 # Copia o código da aplicação
