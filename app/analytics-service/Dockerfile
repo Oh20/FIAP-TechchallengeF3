@@ -6,7 +6,7 @@ FROM python:3.13-slim AS builder
 WORKDIR /app
 
 # Entender melhor esse RUN
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     gcc \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
