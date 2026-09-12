@@ -4,7 +4,7 @@ namespace: toggle-apps
 resources:
   - ../../../base/evaluation-service
 images:
-  - name: acrtogglemasterprod6k07.azurecr.io/evaluation-service
+  - name: acrtogglemasterprod62g6.azurecr.io/evaluation-service
     newTag: latest
 commonAnnotations:
   teste-gitops: "sync-check-1"

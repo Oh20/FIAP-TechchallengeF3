@@ -4,6 +4,6 @@ namespace: toggle-apps
 resources:
 - ../../../base/analytics-service
 images:
-- name: acrtogglemasterprod6k07.azurecr.io/analytics-service
-  newName: acrtogglemasterprod6k07.azurecr.io/analytics-service
+- name: acrtogglemasterprod62g6.azurecr.io/analytics-service
+  newName: acrtogglemasterprod62g6.azurecr.io/analytics-service
   newTag: 8-2d04edd

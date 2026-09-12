@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: targeting-service
-          image: acrtogglemasterprod6k07.azurecr.io/targeting-service:latest
+          image: acrtogglemasterprod62g6.azurecr.io/targeting-service:latest
           imagePullPolicy: Always
           ports:
             - name: http

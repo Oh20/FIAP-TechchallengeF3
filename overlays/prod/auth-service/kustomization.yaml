@@ -4,6 +4,6 @@ namespace: toggle-apps
 resources:
 - ../../../base/auth-service
 images:
-- name: acrtogglemasterprod6k07.azurecr.io/auth-service
-  newName: acrtogglemasterprod6k07.azurecr.io/auth-service
+- name: acrtogglemasterprod62g6.azurecr.io/auth-service
+  newName: acrtogglemasterprod62g6.azurecr.io/auth-service
   newTag: 8-2d04edd

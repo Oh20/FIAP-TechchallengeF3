@@ -4,6 +4,6 @@ namespace: toggle-apps
 resources:
 - ../../../base/flag-service
 images:
-- name: acrtogglemasterprod6k07.azurecr.io/flag-service
-  newName: acrtogglemasterprod6k07.azurecr.io/flag-service
+- name: acrtogglemasterprod62g6.azurecr.io/flag-service
+  newName: acrtogglemasterprod62g6.azurecr.io/flag-service
   newTag: 8-2d04edd
