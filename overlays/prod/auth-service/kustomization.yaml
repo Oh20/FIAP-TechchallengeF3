@@ -6,4 +6,4 @@ resources:
 images:
 - name: acrtogglemasterprod62g6.azurecr.io/auth-service
   newName: acrtogglemasterprod62g6.azurecr.io/auth-service
-  newTag: 8-2d04edd
+  newTag: 13-2cab0e7
