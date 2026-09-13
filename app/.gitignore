@@ -1,0 +1,22 @@
+# Relatórios gerados pelos testes unitários
+test-reports/
+.coverage
+coverage.xml
+junit.xml
+htmlcov/
+.pytest_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Ambiente local — segredos nunca entram no repositório
+.env
+*.env
+!.env.example
+
+# Go
+*.test
+*.out

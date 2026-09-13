@@ -1,0 +1,290 @@
+// =============================================================================
+// ToggleMaster — Pipeline de Testes Unitários (Fase 3)
+// =============================================================================
+//
+// Roda os testes unitários dos 5 microsserviços em paralelo, sempre dentro de
+// containers Docker. O agente Jenkins NÃO precisa ter Go nem Python instalados
+// — só Docker. É o mesmo padrão já usado no pipeline_devsecops.jenkinsfile.
+//
+// Nenhum teste sobe Postgres, Redis, Service Bus ou Cosmos DB: todas as
+// dependências externas são dubladas no próprio código de teste. Isso mantém a
+// suíte rápida (segundos) e determinística, que é o requisito do estágio
+// "Build & Unit Test" do desafio.
+//
+// A lógica de execução mora em scripts/ci/test-go.sh e scripts/ci/test-python.sh,
+// que são versionados e rodam iguais na máquina do dev e no Jenkins.
+//
+// Saídas geradas em test-reports/:
+//   junit-<servico>.xml       relatório JUnit (consumido pelo passo `junit`)
+//   coverage-<servico>.xml    cobertura no formato Cobertura
+//   cobertura-<servico>.txt   percentual de cobertura (usado no quality gate)
+//   test-<servico>.log        log completo da execução
+//
+// Para plugar no pipeline principal: troque o stage 'Build & Unit Test' do
+// pipeline.groovy por um `build job: 'togglemaster-unit-tests'`, ou copie o
+// stage '1. Testes Unitários' para lá.
+// =============================================================================
+
+// --- Catálogo dos serviços -------------------------------------------------
+
+// coberturaMinima é definida por serviço porque a base de comparação é
+// diferente: nos serviços Go o `main()` é wiring de startup (conexão com
+// Postgres/Redis/Service Bus) que nenhum teste unitário alcança e que responde
+// por ~30% das linhas. Nos serviços Python o app.py é quase todo lógica de
+// rota. Os valores abaixo ficam logo abaixo do medido hoje, deixando margem
+// para pequenas refatorações sem reprovar o build por ruído.
+def catalogoServicos() {
+    return [
+        [nome: 'auth-service',       linguagem: 'go',     coberturaMinima: 55],
+        [nome: 'evaluation-service', linguagem: 'go',     coberturaMinima: 60],
+        [nome: 'flag-service',       linguagem: 'python', coberturaMinima: 85],
+        [nome: 'targeting-service',  linguagem: 'python', coberturaMinima: 85],
+        [nome: 'analytics-service',  linguagem: 'python', coberturaMinima: 75],
+    ]
+}
+
+// --- Execução dentro do container ------------------------------------------
+
+def rodarTestes(Map servico) {
+    def ehGo    = servico.linguagem == 'go'
+    def imagem  = ehGo ? env.GO_IMAGE : env.PY_IMAGE
+    def script  = ehGo ? 'test-go.sh' : 'test-python.sh'
+    def extras  = ehGo ? "-e GO_RACE=${params.EXECUTAR_RACE_DETECTOR ? '1' : '0'}" : ''
+
+    sh """
+        docker run --rm \\
+            -v "${WORKSPACE}:/workspace" \\
+            -w "/workspace/app/${servico.nome}" \\
+            -e REPORTS_DIR=/workspace/test-reports \\
+            ${extras} \\
+            ${imagem} \\
+            sh /workspace/scripts/ci/${script} ${servico.nome}
+    """
+}
+
+// --- Pipeline ---------------------------------------------------------------
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        booleanParam(
+            name: 'EXECUTAR_RACE_DETECTOR',
+            defaultValue: true,
+            description: 'Roda os testes Go com -race (detector de corrida de dados). Deixe ligado na main.'
+        )
+        string(
+            name: 'COBERTURA_MINIMA_OVERRIDE',
+            defaultValue: '',
+            description: 'Deixe vazio para usar o mínimo definido por serviço no catálogo. Preencha com um número (ex.: 80) para aplicar o mesmo piso a todos.'
+        )
+        booleanParam(
+            name: 'FALHAR_NA_COBERTURA',
+            defaultValue: true,
+            description: 'Se desmarcado, cobertura abaixo do mínimo só marca o build como UNSTABLE.'
+        )
+    }
+
+    environment {
+        REPORTS_DIR = 'test-reports'
+        GO_IMAGE    = 'golang:1.25'
+        PY_IMAGE    = 'python:3.13-slim'
+    }
+
+    stages {
+
+        // =====================================================================
+        // ETAPA 0: VALIDAÇÃO DO AMBIENTE
+        // =====================================================================
+        stage('0. Validar Ambiente de Execução') {
+            steps {
+                script {
+                    echo '=== Ferramentas do agente ==='
+                    sh '''
+                        set -e
+                        echo "Agente : $(uname -srm)"
+                        echo "Docker : $(docker --version)"
+                        docker info --format 'Engine : {{.ServerVersion}} ({{.OSType}}/{{.Architecture}})'
+                    '''
+
+                    echo '=== Baixando as imagens de teste ==='
+                    sh """
+                        docker pull ${env.GO_IMAGE}
+                        docker pull ${env.PY_IMAGE}
+                    """
+
+                    echo '=== Conferindo os artefatos de teste de cada serviço ==='
+                    def problemas = []
+
+                    ['test-go.sh', 'test-python.sh'].each { s ->
+                        if (!fileExists("scripts/ci/${s}")) {
+                            problemas << "script scripts/ci/${s} não encontrado"
+                        }
+                    }
+
+                    catalogoServicos().each { servico ->
+                        def dir = "app/${servico.nome}"
+
+                        if (!fileExists(dir)) {
+                            problemas << "${servico.nome}: diretório ${dir} não encontrado"
+                            return
+                        }
+
+                        if (servico.linguagem == 'go') {
+                            def qtd = sh(
+                                script: "ls ${dir}/*_test.go 2>/dev/null | wc -l",
+                                returnStdout: true
+                            ).trim()
+
+                            if (qtd == '0') {
+                                problemas << "${servico.nome}: nenhum arquivo *_test.go"
+                            } else {
+                                echo "  ${servico.nome.padRight(20)} ${qtd} arquivo(s) *_test.go"
+                            }
+                        } else {
+                            if (!fileExists("${dir}/requirements-dev.txt")) {
+                                problemas << "${servico.nome}: requirements-dev.txt não encontrado"
+                            }
+
+                            def qtd = sh(
+                                script: "ls ${dir}/tests/test_*.py 2>/dev/null | wc -l",
+                                returnStdout: true
+                            ).trim()
+
+                            if (qtd == '0') {
+                                problemas << "${servico.nome}: nenhum arquivo tests/test_*.py"
+                            } else {
+                                echo "  ${servico.nome.padRight(20)} ${qtd} arquivo(s) tests/test_*.py"
+                            }
+                        }
+                    }
+
+                    if (problemas) {
+                        error "Ambiente inválido:\n  - ${problemas.join('\n  - ')}"
+                    }
+
+                    sh "rm -rf ${env.REPORTS_DIR} && mkdir -p ${env.REPORTS_DIR}"
+                    echo '=== Ambiente validado ==='
+                }
+            }
+        }
+
+        // =====================================================================
+        // ETAPA 1: TESTES UNITÁRIOS (PARALELO)
+        // =====================================================================
+        stage('1. Testes Unitários') {
+            parallel {
+                stage('auth-service (Go)') {
+                    steps {
+                        script { rodarTestes([nome: 'auth-service', linguagem: 'go']) }
+                    }
+                }
+                stage('evaluation-service (Go)') {
+                    steps {
+                        script { rodarTestes([nome: 'evaluation-service', linguagem: 'go']) }
+                    }
+                }
+                stage('flag-service (Python)') {
+                    steps {
+                        script { rodarTestes([nome: 'flag-service', linguagem: 'python']) }
+                    }
+                }
+                stage('targeting-service (Python)') {
+                    steps {
+                        script { rodarTestes([nome: 'targeting-service', linguagem: 'python']) }
+                    }
+                }
+                stage('analytics-service (Python)') {
+                    steps {
+                        script { rodarTestes([nome: 'analytics-service', linguagem: 'python']) }
+                    }
+                }
+            }
+        }
+
+        // =====================================================================
+        // ETAPA 2: QUALITY GATE DE COBERTURA
+        // =====================================================================
+        stage('2. Quality Gate de Cobertura') {
+            steps {
+                script {
+                    def override = params.COBERTURA_MINIMA_OVERRIDE?.trim()
+                    def reprovados = []
+                    def resumo = []
+
+                    catalogoServicos().each { servico ->
+                        def minimo = override ? override.toDouble() : servico.coberturaMinima.toDouble()
+                        def arquivo = "${env.REPORTS_DIR}/cobertura-${servico.nome}.txt"
+
+                        if (!fileExists(arquivo)) {
+                            reprovados << "${servico.nome}: cobertura não foi medida"
+                            return
+                        }
+
+                        def bruto = readFile(arquivo).trim()
+                        def valor = bruto ? bruto.toDouble() : 0.0
+                        def situacao = valor >= minimo ? 'OK' : 'REPROVADO'
+
+                        resumo << String.format('  %-22s %6.2f %%  (mínimo %5.1f %%)  %s',
+                                                servico.nome, valor, minimo, situacao)
+
+                        if (valor < minimo) {
+                            reprovados << "${servico.nome}: ${valor}% (mínimo ${minimo}%)"
+                        }
+                    }
+
+                    echo "=== Cobertura por serviço ===\n${resumo.join('\n')}"
+
+                    if (reprovados) {
+                        def mensagem = "Cobertura abaixo do mínimo:\n  - ${reprovados.join('\n  - ')}"
+                        if (params.FALHAR_NA_COBERTURA) {
+                            error mensagem
+                        }
+                        unstable mensagem
+                    } else {
+                        echo 'Quality gate aprovado: todos os serviços acima do mínimo.'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            junit testResults: "${env.REPORTS_DIR}/junit-*.xml", allowEmptyResults: false
+            archiveArtifacts artifacts: "${env.REPORTS_DIR}/*", allowEmptyArchive: true
+
+            script {
+                // Plugin "Coverage" é opcional: a ausência dele não pode
+                // reprovar o build.
+                try {
+                    recordCoverage(
+                        tools: [[parser: 'COBERTURA', pattern: "${env.REPORTS_DIR}/coverage-*.xml"]],
+                        sourceCodeRetention: 'EVERY_BUILD'
+                    )
+                } catch (ignored) {
+                    echo 'Plugin "Coverage" não instalado — os relatórios ficaram nos artefatos.'
+                }
+            }
+        }
+        success {
+            echo 'Todos os testes unitários passaram. O pipeline de DevSecOps pode prosseguir.'
+        }
+        unstable {
+            echo 'Testes passaram, mas a cobertura ficou abaixo do mínimo configurado.'
+        }
+        failure {
+            echo 'Testes unitários falharam. Veja o relatório JUnit e os logs em test-reports/.'
+        }
+        cleanup {
+            cleanWs deleteDirs: true, notFailBuild: true
+        }
+    }
+}

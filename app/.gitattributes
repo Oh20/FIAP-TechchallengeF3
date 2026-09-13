@@ -1,0 +1,7 @@
+# Os scripts de CI rodam dentro de containers Linux: precisam de fim de linha LF
+# mesmo quando editados no Windows. Sem isso o `sh` falha com "bad interpreter".
+*.sh            text eol=lf
+scripts/ci/*    text eol=lf
+Dockerfile      text eol=lf
+*.jenkinsfile   text eol=lf
+*.groovy        text eol=lf

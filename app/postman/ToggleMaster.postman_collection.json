@@ -1,0 +1,268 @@
+{
+  "info": {
+    "name": "ToggleMaster (AKS)",
+    "description": "Testes do ToggleMaster via Application Gateway (Ingress/AGIC).\n\nEstrutura:\n- '0. Setup (rodar uma vez)': cria a API key (salva em {{apiKey}}) e semeia varios cenarios de flag com percentuais diferentes. Rode UMA vez.\n- '1. Carga aleatoria': avalia com user_id aleatorio e flag sorteada. Rode com N iteracoes no Collection Runner. NAO recria a key.\n- '2. Manual (passo a passo)': requests individuais para demo guiada.\n\nAjuste 'baseUrl' para o IP do seu Application Gateway.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://SUBSTITUA-PELO-IP-DO-APP-GATEWAY", "type": "string" },
+    { "key": "masterKey", "value": "", "type": "string" },
+    { "key": "apiKey", "value": "", "type": "string" },
+    { "key": "flagPool", "value": "[\"dashboard-50\",\"beta-25\",\"promo-75\",\"fullrollout-100\"]", "type": "string" },
+    { "key": "flagName", "value": "dashboard-50", "type": "string" },
+    { "key": "userId", "value": "user-123", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "0. Setup (rodar uma vez)",
+      "item": [
+        {
+          "name": "Criar chave + cenarios",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('key criada', () => pm.expect([200,201]).to.include(pm.response.code));",
+                  "const key = pm.response.json().key;",
+                  "pm.collectionVariables.set('apiKey', key);",
+                  "",
+                  "const base = pm.collectionVariables.get('baseUrl');",
+                  "const auth = { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' };",
+                  "",
+                  "const scenarios = [",
+                  "  { name: 'dashboard-50',    pct: 50,  enabled: true  },",
+                  "  { name: 'beta-25',         pct: 25,  enabled: true  },",
+                  "  { name: 'promo-75',        pct: 75,  enabled: true  },",
+                  "  { name: 'fullrollout-100', pct: 100, enabled: true  },",
+                  "  { name: 'kill-switch-off', pct: 100, enabled: false }",
+                  "];",
+                  "",
+                  "scenarios.forEach(s => {",
+                  "  pm.sendRequest({ url: base + '/flags', method: 'POST', header: auth,",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ name: s.name, description: 'seed', is_enabled: s.enabled }) } },",
+                  "    (e, r) => console.log('flag', s.name, r ? r.code : e));",
+                  "  pm.sendRequest({ url: base + '/rules', method: 'POST', header: auth,",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ flag_name: s.name, is_enabled: true, rules: { type: 'PERCENTAGE', value: s.pct } }) } },",
+                  "    (e, r) => console.log('rule', s.name, r ? r.code : e));",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('flagPool', JSON.stringify(scenarios.map(s => s.name)));",
+                  "console.log('Cenarios semeados:', scenarios.map(s => s.name).join(', '));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{masterKey}}", "type": "string" } ] },
+            "url": { "raw": "{{baseUrl}}/admin/keys", "host": [ "{{baseUrl}}" ], "path": [ "admin", "keys" ] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"postman-load\"\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Carga aleatoria",
+      "item": [
+        {
+          "name": "Avaliar (aleatorio)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let pool;",
+                  "try { pool = JSON.parse(pm.collectionVariables.get('flagPool')); } catch (e) { pool = null; }",
+                  "if (!pool || !pool.length) { pool = ['dashboard-50','beta-25','promo-75','fullrollout-100']; }",
+                  "",
+                  "const flag = pool[Math.floor(Math.random() * pool.length)];",
+                  "const user = 'user-' + Math.random().toString(36).slice(2, 10);",
+                  "",
+                  "pm.collectionVariables.set('rndFlag', flag);",
+                  "pm.collectionVariables.set('rndUser', user);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('tem campo result', () => pm.expect(b).to.have.property('result'));",
+                  "console.log(`[${b.flag_name}] ${b.user_id} => ${b.result}`);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/evaluate?user_id={{rndUser}}&flag_name={{rndFlag}}",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "evaluate" ],
+              "query": [
+                { "key": "user_id", "value": "{{rndUser}}" },
+                { "key": "flag_name", "value": "{{rndFlag}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Criar cenario aleatorio (flag + regra)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const suffix = Math.random().toString(36).slice(2, 7);",
+                  "const pct = Math.floor(Math.random() * 21) * 5;",
+                  "const flag = 'rand-' + suffix + '-' + pct;",
+                  "pm.collectionVariables.set('newFlag', flag);",
+                  "pm.collectionVariables.set('newPct', String(pct));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('flag criada (201) ou ja existe (409)', () => pm.expect([201,409]).to.include(pm.response.code));",
+                  "const base = pm.collectionVariables.get('baseUrl');",
+                  "const key = pm.collectionVariables.get('apiKey');",
+                  "const flag = pm.collectionVariables.get('newFlag');",
+                  "const pct = parseInt(pm.collectionVariables.get('newPct'), 10);",
+                  "const auth = { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' };",
+                  "pm.sendRequest({ url: base + '/rules', method: 'POST', header: auth,",
+                  "  body: { mode: 'raw', raw: JSON.stringify({ flag_name: flag, is_enabled: true, rules: { type: 'PERCENTAGE', value: pct } }) } },",
+                  "  (e, r) => console.log(`cenario ${flag} @ ${pct}% => regra`, r ? r.code : e));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{apiKey}}", "type": "string" } ] },
+            "url": { "raw": "{{baseUrl}}/flags", "host": [ "{{baseUrl}}" ], "path": [ "flags" ] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"{{newFlag}}\",\n  \"description\": \"cenario aleatorio\",\n  \"is_enabled\": true\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Manual (passo a passo)",
+      "item": [
+        {
+          "name": "Criar Flag",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{apiKey}}", "type": "string" } ] },
+            "url": { "raw": "{{baseUrl}}/flags", "host": [ "{{baseUrl}}" ], "path": [ "flags" ] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"{{flagName}}\",\n  \"description\": \"demo\",\n  \"is_enabled\": true\n}" }
+          }
+        },
+        {
+          "name": "Criar Regra 50%",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{apiKey}}", "type": "string" } ] },
+            "url": { "raw": "{{baseUrl}}/rules", "host": [ "{{baseUrl}}" ], "path": [ "rules" ] },
+            "body": { "mode": "raw", "raw": "{\n  \"flag_name\": \"{{flagName}}\",\n  \"is_enabled\": true,\n  \"rules\": { \"type\": \"PERCENTAGE\", \"value\": 50 }\n}" }
+          }
+        },
+        {
+          "name": "Avaliar (fixo)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/evaluate?user_id={{userId}}&flag_name={{flagName}}",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "evaluate" ],
+              "query": [
+                { "key": "user_id", "value": "{{userId}}" },
+                { "key": "flag_name", "value": "{{flagName}}" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Consultar (dados salvos)",
+      "item": [
+        {
+          "name": "Listar todas as Flags (Postgres)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const flags = pm.response.json();",
+                  "console.log('Flags salvas:', flags.length);",
+                  "flags.forEach(f => console.log(`- ${f.name} | enabled=${f.is_enabled} | criada=${f.created_at}`));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{apiKey}}", "type": "string" } ] },
+            "url": { "raw": "{{baseUrl}}/flags", "host": [ "{{baseUrl}}" ], "path": [ "flags" ] }
+          }
+        },
+        {
+          "name": "Buscar uma Flag por nome (Postgres)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "console.log('Flag:', JSON.stringify(pm.response.json(), null, 2));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{apiKey}}", "type": "string" } ] },
+            "url": { "raw": "{{baseUrl}}/flags/{{flagName}}", "host": [ "{{baseUrl}}" ], "path": [ "flags", "{{flagName}}" ] }
+          }
+        },
+        {
+          "name": "Buscar a Regra de uma Flag (Postgres)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "console.log('Regra:', JSON.stringify(pm.response.json(), null, 2));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{apiKey}}", "type": "string" } ] },
+            "url": { "raw": "{{baseUrl}}/rules/{{flagName}}", "host": [ "{{baseUrl}}" ], "path": [ "rules", "{{flagName}}" ] }
+          }
+        }
+      ]
+    }
+  ]
+}

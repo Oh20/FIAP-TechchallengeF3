@@ -1,0 +1,5 @@
+# Dependências usadas apenas nos testes unitários (não vão para a imagem).
+# Instale junto com o requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+pytest==8.3.4
+pytest-cov==6.0.0
