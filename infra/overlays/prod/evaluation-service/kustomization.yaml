@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: toggle-apps
+resources:
+- ../../../base/evaluation-service
+images:
+- name: acrtogglemasterprod62g6.azurecr.io/evaluation-service
+  newName: acrtogglemasterprod62g6.azurecr.io/evaluation-service
+  newTag: 13-2cab0e7
+
+commonAnnotations:
+  demo-sync: "entrega-video"

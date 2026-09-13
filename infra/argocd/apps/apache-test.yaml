@@ -1,0 +1,30 @@
+# Teste auto-contido (httpd publico) -> prova o loop GitOps sem depender de ACR
+# nem de secrets.
+#
+# path aponta para teste-apache/, onde os manifestos realmente estao. Antes era
+# `path: .` (a raiz do repo, sem recurse), que nao tem manifesto nenhum: a
+# Application ficava sem recursos para sincronizar.
+#
+# destination.namespace tem de bater com o `namespace:` do kustomization.yaml
+# de teste-apache/ (toggle-apps). Antes apontava para agrmudoufeladapulta, e o
+# Argo CD recusava o sync por conflito de namespace.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: apache-test
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://Oh20Tony@dev.azure.com/Oh20Tony/FIAP%20-%20TechChallenge/_git/TCF3%20-%20K8S'
+    targetRevision: main
+    path: teste-apache
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: toggle-apps
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: auth-seed-service-key
+  namespace: toggle-apps
+  labels:
+    app: auth-service
+    role: seed
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        role: seed
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: postgres:16
+          # Grava o hash SHA-256 da SERVICE_API_KEY na tabela api_keys do
+          # auth-service. Sem esta linha o evaluation-service chama o
+          # flag/targeting com uma chave que o /validate nao reconhece, e o
+          # /evaluate responde 502 para toda flag.
+          #
+          # O hash chega pronto pelo Secret: quem calcula e o 05-chave-de-servico.sh.
+          # A chave em texto plano nunca entra no cluster nem no log.
+          #
+          # ON CONFLICT pelo key_hash (UNIQUE em db/init.sql) torna o Job
+          # idempotente: rodar de novo nao duplica nem falha.
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v hash="$KEY_HASH" <<'SQL'
+              INSERT INTO api_keys (name, key_hash, is_active)
+                  VALUES ('evaluation-service', :'hash', true)
+                  ON CONFLICT (key_hash) DO UPDATE SET is_active = true;
+              SQL
+              echo "chave de servico do evaluation-service registrada."
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: auth-service-secret
+                  key: DATABASE_URL
+            - name: KEY_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: auth-service-key-seed
+                  key: KEY_HASH
