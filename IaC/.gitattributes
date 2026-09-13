@@ -1,0 +1,5 @@
+# Os scripts de scripts/ rodam em container Linux. CRLF quebra o shebang com
+# "bad interpreter: /bin/sh^M", entao a normalizacao e forcada aqui - o repo e
+# editado no Windows.
+*.sh text eol=lf
+*.jenkinsfile text eol=lf

@@ -1,0 +1,37 @@
+# Diretorios de trabalho do Terraform
+**/.terraform/
+.terraform.tfstate.lock.info
+
+# State: o de env/ vive no backend remoto e nunca deve ser commitado.
+# O de bootstrap/ e local por natureza - se optar por versiona-lo,
+# adicione uma excecao explicita aqui.
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Variaveis com valores sensiveis. env/toggle.tfvars e versionado de proposito
+# (nao contem segredos); bootstrap/terraform.tfvars traz object IDs e fica de
+# fora - use bootstrap/terraform.tfvars.example como modelo.
+*.auto.tfvars
+secrets.tfvars
+bootstrap/terraform.tfvars
+
+# Credenciais do App Registration nunca entram no repositorio: elas vivem em
+# ARM_CLIENT_SECRET / ARM_USE_OIDC no ambiente ou no cofre do pipeline.
+.env
+*.env
+!*.env.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Planos salvos podem conter valores sensiveis em texto claro
+*.tfplan
+tfplan
+planfile
+
+# Coordenadas do ambiente geradas pelo pipeline (scripts/_comum.sh).
+# Ja coberto por *.env acima, listado aqui para ficar explicito.
+ambiente.env
